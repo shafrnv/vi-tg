@@ -23,6 +23,10 @@ type Message struct {
 	From      string
 	Timestamp time.Time
 	ChatID    int64
+	Type      string // "text", "sticker", "photo", "video", etc.
+	StickerID int64  // ID стикера если Type == "sticker"
+	StickerEmoji string // Эмодзи стикера
+	StickerPath string // Путь к файлу стикера (если скачан)
 }
 
 func NewClient(token string) (*Client, error) {
