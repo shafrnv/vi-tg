@@ -58,9 +58,11 @@ type model struct {
 	height      int
 
 	// Режимы
-	inputMode bool
-	loading   bool
-	error     string
+	inputMode      bool
+	phoneInputMode bool // Новый режим для ввода номера телефона
+	codeInputMode  bool // Режим для ввода кода подтверждения
+	loading        bool
+	error          string
 
 	// Режим просмотра стикера
 	stickerViewMode   bool
@@ -92,6 +94,12 @@ type reloadMessagesMsg struct {
 	chatName string
 	chatID   int64
 }
+type phoneInputMsg struct {
+	phone string
+}
+type switchToPhoneInputMsg struct{}
+type switchToCodeInputMsg struct{}
+type checkCodeFileMsg struct{}
 
 func initialModel() model {
 	cfg, err := config.LoadConfig()
@@ -126,31 +134,56 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		tea.EnterAltScreen,
 		m.initAuth(),
-		m.loadChats(),
+		tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return checkCodeFileMsg{} }),
+		// Убираем автоматическую загрузку чатов - она будет вызвана после успешной авторизации
 	)
 }
 
 func (m model) initAuth() tea.Cmd {
 	return tea.Tick(time.Millisecond*100, func(time.Time) tea.Msg {
 		if m.config.UseMTProto && m.mtproto != nil {
+			// Очищаем старые файлы авторизации
+			os.Remove("/tmp/vi-tg-needs-code")
+			os.Remove("/tmp/vi-tg-auth-code")
+
+			// Проверяем, есть ли сохраненная сессия
 			if m.config.PhoneNumber == "" {
-				fmt.Print("Введите номер телефона (с кодом страны): ")
-				var phone string
-				fmt.Scanln(&phone)
-				m.config.PhoneNumber = phone
-				config.SaveConfig(m.config)
+				// Если нет номера телефона, переключаем в режим ввода
+				return switchToPhoneInputMsg{}
 			}
 
-			if err := m.mtproto.AuthAndConnect(m.ctx, m.config.PhoneNumber); err != nil {
-				return errorMsg(fmt.Sprintf("Ошибка авторизации: %v", err))
+			// Проверяем, нужен ли код подтверждения
+			if _, err := os.Stat("/tmp/vi-tg-needs-code"); err == nil {
+				// Если нужен код, переключаем в режим ввода кода
+				return switchToCodeInputMsg{}
 			}
+
+			// Проверяем, авторизован ли уже клиент
+			if m.mtproto.IsAuthorized() {
+				// Если уже авторизован, просто загружаем чаты
+				return m.loadChats()
+			}
+
+			// Если номер есть, пытаемся инициализировать из сессии
+			if err := m.mtproto.InitFromSession(m.ctx); err != nil {
+				// Если не удалось инициализировать из сессии, пытаемся авторизоваться заново
+				if err := m.mtproto.AuthAndConnect(m.ctx, m.config.PhoneNumber); err != nil {
+					return errorMsg(fmt.Sprintf("Ошибка авторизации: %v", err))
+				}
+			}
+
+			// После успешной инициализации загружаем чаты
+			return nil
+		} else if m.telegram != nil {
+			// Если используется Telegram Bot API, сразу загружаем чаты
+			return m.loadChats()
 		}
 		return nil
 	})
 }
 
 func (m model) loadChats() tea.Cmd {
-	return tea.Tick(time.Millisecond*500, func(time.Time) tea.Msg {
+	return tea.Tick(time.Millisecond*1000, func(time.Time) tea.Msg {
 		var chats []ChatItem
 
 		if m.config.UseMTProto && m.mtproto != nil {
@@ -273,6 +306,96 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Обработка ввода номера телефона
+		if m.phoneInputMode {
+			switch msg.String() {
+			case "enter":
+				if m.input != "" {
+					// Сохраняем номер телефона
+					m.config.PhoneNumber = m.input
+					config.SaveConfig(m.config)
+					m.phoneInputMode = false
+					m.input = ""
+
+					// Пытаемся авторизоваться
+					return m, tea.Tick(time.Millisecond*10, func(time.Time) tea.Msg {
+						if err := m.mtproto.AuthAndConnect(m.ctx, m.config.PhoneNumber); err != nil {
+							return errorMsg(fmt.Sprintf("Ошибка авторизации: %v", err))
+						}
+						// После успешной авторизации загружаем чаты
+						return loadChatsMsg{} // Пустое сообщение, которое будет обработано
+					})
+				}
+				return m, nil
+			case "esc":
+				m.phoneInputMode = false
+				m.input = ""
+				return m, nil
+			case "backspace":
+				if len(m.input) > 0 {
+					m.input = m.input[:len(m.input)-1]
+				}
+				return m, nil
+			default:
+				if len(msg.String()) == 1 {
+					m.input += msg.String()
+				}
+				return m, nil
+			}
+		}
+
+		// Обработка ввода кода подтверждения
+		if m.codeInputMode {
+			switch msg.String() {
+			case "enter":
+				if m.input != "" && len(m.input) >= 5 {
+					// Отправляем код подтверждения в MTProto клиент
+					m.codeInputMode = false
+					code := m.input
+					m.input = ""
+
+					// Записываем код в файл для MTProto клиента
+					codeFile := "/tmp/vi-tg-auth-code"
+					if err := os.WriteFile(codeFile, []byte(code), 0644); err != nil {
+						return m, tea.Tick(time.Millisecond*10, func(time.Time) tea.Msg {
+							return errorMsg(fmt.Sprintf("Ошибка записи кода: %v", err))
+						})
+					}
+
+					// Ждем немного и загружаем чаты
+					return m, tea.Tick(time.Millisecond*1000, func(time.Time) tea.Msg {
+						// Проверяем, авторизован ли клиент после ввода кода
+						if m.mtproto.IsAuthorized() {
+							return m.loadChats()
+						}
+						// Если не авторизован, ждем еще немного
+						return tea.Tick(time.Millisecond*500, func(time.Time) tea.Msg {
+							return loadChatsMsg{} // Пустое сообщение для повторной проверки
+						})
+					})
+				}
+				return m, nil
+			case "esc":
+				m.codeInputMode = false
+				m.input = ""
+				return m, nil
+			case "backspace":
+				if len(m.input) > 0 {
+					m.input = m.input[:len(m.input)-1]
+				}
+				return m, nil
+			default:
+				// Принимаем только цифры и ограничиваем длину до 6 символов
+				if len(msg.String()) == 1 && len(m.input) < 6 {
+					char := msg.String()
+					if char >= "0" && char <= "9" {
+						m.input += char
+					}
+				}
+				return m, nil
+			}
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -377,6 +500,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case loadChatsMsg:
+		// Если это пустое сообщение (после авторизации), загружаем чаты
+		if len(msg) == 0 {
+			return m, m.loadChats()
+		}
+
 		// Сохраняем текущую позицию скролла
 		oldChatScroll := m.chatScroll
 		oldChatIndex := m.chatIndex
@@ -413,6 +541,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.error = string(msg)
 		m.loading = false
 		return m, nil
+
+	case phoneInputMsg:
+		// Этот обработчик больше не используется, так как ввод происходит в TUI
+		return m, nil
+
+	case switchToPhoneInputMsg:
+		// Переключаем в режим ввода номера телефона
+		m.phoneInputMode = true
+		m.input = ""
+		return m, nil
+
+	case switchToCodeInputMsg:
+		// Переключаем в режим ввода кода подтверждения
+		m.codeInputMode = true
+		m.input = ""
+		return m, nil
+
+	case checkCodeFileMsg:
+		// Периодически проверяем, нужен ли код подтверждения
+		if m.codeInputMode {
+			// Если уже в режиме ввода кода, продолжаем проверять
+			return m, tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return checkCodeFileMsg{} })
+		}
+		if _, err := os.Stat("/tmp/vi-tg-needs-code"); err == nil {
+			// Если нужен код, переключаем в режим ввода кода
+			return m, tea.Tick(time.Millisecond*10, func(time.Time) tea.Msg { return switchToCodeInputMsg{} })
+		}
+
+		// Проверяем, авторизован ли клиент и загружены ли чаты
+		if m.config.UseMTProto && m.mtproto != nil && m.mtproto.IsAuthorized() && len(m.chats) == 0 {
+			return m, m.loadChats()
+		}
+
+		// Продолжаем проверять
+		return m, tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return checkCodeFileMsg{} })
 
 	case reloadMessagesMsg:
 		m.loading = true
@@ -458,6 +621,16 @@ func (m model) sendMessage() tea.Cmd {
 func (m model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Загрузка..."
+	}
+
+	// Если в режиме ввода номера телефона, показываем специальный интерфейс
+	if m.phoneInputMode {
+		return m.renderPhoneInput()
+	}
+
+	// Если в режиме ввода кода подтверждения, показываем специальный интерфейс
+	if m.codeInputMode {
+		return m.renderCodeInput()
 	}
 
 	// Проверяем, есть ли стикеры для отображения
@@ -765,6 +938,113 @@ func (m model) renderStatus() string {
 	return helpStyle.Render(helpText)
 }
 
+// renderPhoneInput отображает интерфейс ввода номера телефона
+func (m model) renderPhoneInput() string {
+	var lines []string
+
+	// Заголовок
+	title := titleStyle.Render("Авторизация в Telegram")
+	lines = append(lines, title)
+	lines = append(lines, "")
+
+	// Инструкции
+	instructions := "Введите номер телефона с кодом страны:"
+	lines = append(lines, instructions)
+	lines = append(lines, "Пример: +7 999 123 45 67")
+	lines = append(lines, "")
+
+	// Поле ввода
+	inputLine := "Номер: " + m.input
+	if m.input == "" {
+		inputLine = "Номер: "
+	}
+	lines = append(lines, inputLine)
+	lines = append(lines, "")
+
+	// Подсказки
+	helpText := "Enter: подтвердить, Esc: отмена, Backspace: удалить"
+	lines = append(lines, helpStyle.Render(helpText))
+
+	// Центрируем содержимое
+	content := strings.Join(lines, "\n")
+	contentLines := strings.Split(content, "\n")
+
+	// Вычисляем отступы для центрирования
+	verticalPadding := (m.height - len(contentLines)) / 2
+	if verticalPadding < 0 {
+		verticalPadding = 0
+	}
+
+	// Добавляем отступы сверху
+	for i := 0; i < verticalPadding; i++ {
+		lines = append([]string{""}, lines...)
+	}
+
+	// Дополняем до нужной высоты
+	for len(lines) < m.height {
+		lines = append(lines, "")
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// renderCodeInput отображает интерфейс ввода кода подтверждения
+func (m model) renderCodeInput() string {
+	var lines []string
+
+	// Заголовок
+	title := titleStyle.Render("Введите код подтверждения")
+	lines = append(lines, title)
+	lines = append(lines, "")
+
+	// Инструкция
+	instructions := "Введите код, который был отправлен на ваш номер телефона."
+	lines = append(lines, instructions)
+	lines = append(lines, "Код должен содержать 5-6 цифр.")
+	lines = append(lines, "")
+
+	// Поле ввода
+	inputLine := "Код: " + m.input
+	if m.input == "" {
+		inputLine = "Код: "
+	}
+	lines = append(lines, inputLine)
+	lines = append(lines, "")
+
+	// Показываем длину кода
+	if len(m.input) > 0 {
+		lengthInfo := fmt.Sprintf("Длина: %d/6", len(m.input))
+		lines = append(lines, messageStyle.Render(lengthInfo))
+		lines = append(lines, "")
+	}
+
+	// Подсказки
+	helpText := "Enter: подтвердить (минимум 5 цифр), Esc: отмена, Backspace: удалить"
+	lines = append(lines, helpStyle.Render(helpText))
+
+	// Центрируем содержимое
+	content := strings.Join(lines, "\n")
+	contentLines := strings.Split(content, "\n")
+
+	// Вычисляем отступы для центрирования
+	verticalPadding := (m.height - len(contentLines)) / 2
+	if verticalPadding < 0 {
+		verticalPadding = 0
+	}
+
+	// Добавляем отступы сверху
+	for i := 0; i < verticalPadding; i++ {
+		lines = append([]string{""}, lines...)
+	}
+
+	// Дополняем до нужной высоты
+	for len(lines) < m.height {
+		lines = append(lines, "")
+	}
+
+	return strings.Join(lines, "\n")
+}
+
 // renderStickerPanel отображает панель со стикерами в правом нижнем углу
 func (m model) renderStickerPanel(width, height int) string {
 	var lines []string
@@ -901,10 +1181,6 @@ func isKittySupported() bool {
 	// Более точная проверка Kitty терминала
 	isKitty := term == "xterm-kitty" || strings.Contains(term, "kitty") || kittyTerm != ""
 
-	if isKitty {
-		fmt.Printf("DEBUG: Kitty терминал обнаружен (TERM=%s, KITTY_WINDOW_ID=%s)\n", term, kittyTerm)
-	}
-
 	return isKitty
 }
 
@@ -968,8 +1244,6 @@ func convertWebmToPng(webmPath string) (string, error) {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 
-	fmt.Printf("DEBUG: Запуск ffmpeg для конвертации %s\n", webmPath)
-
 	if err := cmd.Run(); err != nil {
 		// Удаляем частично созданный файл при ошибке
 		os.Remove(pngPath)
@@ -978,8 +1252,6 @@ func convertWebmToPng(webmPath string) (string, error) {
 		}
 		return "", fmt.Errorf("ошибка конвертации ffmpeg: %v", err)
 	}
-
-	fmt.Printf("DEBUG: Конвертация завершена успешно\n")
 
 	// Проверяем, что файл создался
 	if _, err := os.Stat(pngPath); err != nil {
@@ -991,27 +1263,19 @@ func convertWebmToPng(webmPath string) (string, error) {
 
 // processWebMAsync асинхронно обрабатывает WebM файл
 func processWebMAsync(data []byte, path string) {
-	fmt.Printf("DEBUG: Асинхронная обработка WebM файла %s\n", path)
-
 	// Проверяем, не слишком ли большой файл
 	if len(data) > 1024*1024 { // 1MB
-		fmt.Printf("DEBUG: Файл слишком большой (%d байт), пропускаем\n", len(data))
 		return
 	}
 
 	pngPath, err := convertWebmToPng(path)
 	if err != nil {
-		fmt.Printf("DEBUG: Ошибка конвертации WebM в PNG: %v\n", err)
 		return
 	}
 
-	fmt.Printf("DEBUG: WebM сконвертирован в PNG: %s\n", pngPath)
-
 	// Показываем стикер в новом Kitty терминале если включено
 	if os.Getenv("VI_TG_AUTO_KITTY") == "1" {
-		if err := showStickerInNewKitty(pngPath); err != nil {
-			fmt.Printf("DEBUG: Не удалось открыть новый Kitty: %v\n", err)
-		}
+		showStickerInNewKitty(pngPath)
 	}
 }
 
@@ -1030,7 +1294,6 @@ func showStickerInNewKitty(imagePath string) error {
 		return fmt.Errorf("ошибка запуска Kitty: %v", err)
 	}
 
-	fmt.Printf("DEBUG: Запущен новый Kitty терминал для отображения %s\n", imagePath)
 	return nil
 }
 
@@ -1055,9 +1318,7 @@ func showStickersInNewKitty(messages []MessageItem) {
 				imagePath = msg.StickerPath
 			}
 
-			if err := showStickerInNewKitty(imagePath); err != nil {
-				fmt.Printf("DEBUG: Не удалось показать стикер %s: %v\n", imagePath, err)
-			} else {
+			if err := showStickerInNewKitty(imagePath); err == nil {
 				stickersShown++
 				// Небольшая задержка между открытиями терминалов
 				time.Sleep(100 * time.Millisecond)
@@ -1065,15 +1326,6 @@ func showStickersInNewKitty(messages []MessageItem) {
 		}
 	}
 
-	if stickersShown == 0 {
-		fmt.Printf("DEBUG: Стикеры не найдены в текущих сообщениях\n")
-	} else {
-		fmt.Printf("DEBUG: Показано %d стикеров в новых Kitty терминалах", stickersShown)
-		if stickersShown >= maxStickers {
-			fmt.Printf(" (максимум %d за раз)", maxStickers)
-		}
-		fmt.Printf("\n")
-	}
 }
 
 // kittyImage возвращает escape-последовательность для вывода картинки через Kitty protocol
@@ -1114,7 +1366,6 @@ func kittyImage(path string, width int) string {
 
 		// Проверяем формат файла
 		format := checkImageFormat(data)
-		fmt.Printf("DEBUG: Формат файла %s: %s\n", path, format)
 
 		return processImageDataWithSize(data, path, format, width)
 

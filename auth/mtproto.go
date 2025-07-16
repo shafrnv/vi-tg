@@ -18,8 +18,9 @@ import (
 )
 
 type MTProtoClient struct {
-	client *telegram.Client
-	api    *tg.Client
+	client   *telegram.Client
+	api      *tg.Client
+	authCode string // Код подтверждения для авторизации
 }
 
 type Dialog struct {
@@ -59,10 +60,22 @@ func (a *ConsoleAuth) Password(ctx context.Context) (string, error) {
 }
 
 func (a *ConsoleAuth) Code(ctx context.Context, sentCode *tg.AuthSentCode) (string, error) {
-	fmt.Print("Введите код подтверждения: ")
-	r := bufio.NewReader(os.Stdin)
-	code, _ := r.ReadString('\n')
-	return strings.TrimSpace(code), nil
+	// Создаем файл-сигнал для TUI
+	signalFile := "/tmp/vi-tg-needs-code"
+	os.WriteFile(signalFile, []byte("1"), 0644)
+
+	// Ждем пока код не будет установлен через TUI
+	for {
+		time.Sleep(100 * time.Millisecond)
+		// Проверяем файл с кодом
+		codeFile := "/tmp/vi-tg-auth-code"
+		if data, err := os.ReadFile(codeFile); err == nil {
+			code := strings.TrimSpace(string(data))
+			os.Remove(codeFile)   // Удаляем файл после чтения
+			os.Remove(signalFile) // Удаляем сигнальный файл
+			return code, nil
+		}
+	}
 }
 
 func (a *ConsoleAuth) SignUp(ctx context.Context) (gotdauth.UserInfo, error) {
@@ -94,8 +107,79 @@ func NewMTProtoClient() *MTProtoClient {
 	return &MTProtoClient{}
 }
 
+// SetAuthCode устанавливает код подтверждения
+func (m *MTProtoClient) SetAuthCode(code string) {
+	m.authCode = code
+}
+
+// IsAuthorized проверяет, авторизован ли клиент
+func (m *MTProtoClient) IsAuthorized() bool {
+	return m.api != nil && m.client != nil
+}
+
+// InitFromSession инициализирует клиент из сохраненной сессии
+func (m *MTProtoClient) InitFromSession(ctx context.Context) error {
+	sessionPath := getSessionPath()
+
+	// Проверяем, существует ли файл сессии
+	if _, err := os.Stat(sessionPath); err != nil {
+		return fmt.Errorf("файл сессии не найден: %w", err)
+	}
+
+	client := telegram.NewClient(19936415, "2721a01cc1e880707e42f3f56fee3448", telegram.Options{
+		SessionStorage: &telegram.FileSessionStorage{Path: sessionPath},
+	})
+
+	// Запускаем клиент в горутине для проверки сессии
+	authDone := make(chan error, 1)
+
+	go func() {
+		err := client.Run(ctx, func(ctx context.Context) error {
+			// Проверяем, авторизован ли клиент
+			if _, err := client.Auth().Status(ctx); err != nil {
+				return fmt.Errorf("сессия недействительна: %w", err)
+			}
+
+			// Сохраняем API клиент
+			m.api = client.API()
+			m.client = client
+
+			// Сигнализируем об успешной инициализации
+			authDone <- nil
+
+			// Держим соединение активным
+			<-ctx.Done()
+			return nil
+		})
+
+		// Если инициализация не прошла, отправляем ошибку
+		select {
+		case authDone <- err:
+		default:
+		}
+	}()
+
+	// Ждем успешной инициализации
+	select {
+	case err := <-authDone:
+		if err != nil {
+			return err
+		}
+		return nil
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("таймаут инициализации из сессии")
+	}
+}
+
 func (m *MTProtoClient) AuthAndConnect(ctx context.Context, phone string) error {
 	sessionPath := getSessionPath()
+
+	// Создаем директорию для сессии если её нет
+	sessionDir := filepath.Dir(sessionPath)
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		return fmt.Errorf("ошибка создания директории сессии: %w", err)
+	}
+
 	client := telegram.NewClient(19936415, "2721a01cc1e880707e42f3f56fee3448", telegram.Options{
 		SessionStorage: &telegram.FileSessionStorage{Path: sessionPath},
 	})
@@ -118,6 +202,8 @@ func (m *MTProtoClient) AuthAndConnect(ctx context.Context, phone string) error 
 			m.api = client.API()
 			m.client = client
 
+			fmt.Println("Соединение установлено, поддерживаем активность...")
+
 			// Сигнализируем об успешной авторизации
 			authDone <- nil
 
@@ -139,6 +225,7 @@ func (m *MTProtoClient) AuthAndConnect(ctx context.Context, phone string) error 
 		if err != nil {
 			return err
 		}
+		fmt.Println("Авторизация завершена, интерфейс запускается...")
 		return nil
 	case <-time.After(60 * time.Second):
 		return fmt.Errorf("таймаут авторизации")
@@ -168,8 +255,8 @@ func (m *MTProtoClient) GetDialogs(ctx context.Context) ([]Dialog, error) {
 
 	switch d := dialogs.(type) {
 	case *tg.MessagesDialogs:
-
 		for i, dialogRaw := range d.Dialogs {
+
 			dialog, ok := dialogRaw.(*tg.Dialog)
 			if !ok {
 				continue
@@ -223,7 +310,8 @@ func (m *MTProtoClient) GetDialogs(ctx context.Context) ([]Dialog, error) {
 				LastMsg: fmt.Sprintf("%d", i),
 			})
 		}
-	case *tg.MessagesDialogsSlice: // Обрабатываем MessagesDialogsSlice аналогично
+	case *tg.MessagesDialogsSlice:
+		// Обрабатываем MessagesDialogsSlice аналогично
 		for i, dialogRaw := range d.Dialogs {
 			dialog, ok := dialogRaw.(*tg.Dialog)
 			if !ok {
@@ -369,6 +457,8 @@ func (m *MTProtoClient) GetMessages(ctx context.Context, peerID int64, limit int
 
 	var result []Message
 
+	// Добавляем отладочную информацию
+
 	switch messages := messagesRaw.(type) {
 	case *tg.MessagesMessages:
 		for _, msgRaw := range messages.Messages {
@@ -389,6 +479,7 @@ func (m *MTProtoClient) GetMessages(ctx context.Context, peerID int64, limit int
 			}
 		}
 	default:
+		return nil, fmt.Errorf("неизвестный тип сообщений: %T", messagesRaw)
 	}
 
 	return result, nil
@@ -481,7 +572,6 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 	totalBytes := int64(0)
 
 	for {
-
 		resp, err := api.UploadGetFile(context.Background(), &tg.UploadGetFileRequest{
 			Precise:      true,
 			CDNSupported: false, // Отключаем CDN поддержку
@@ -504,12 +594,15 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 		// Проверяем тип ответа и записываем данные
 		switch data := resp.(type) {
 		case *tg.UploadFile:
+			fmt.Printf("DEBUG: Получено %d байт данных\n", len(data.Bytes))
 			if len(data.Bytes) == 0 {
 				// Файл скачан полностью
+				fmt.Printf("DEBUG: Получен пустой чанк, файл скачан полностью\n")
 				finished = true
 			} else {
 				// Записываем чанк в файл
 				if _, err := f.Write(data.Bytes); err != nil {
+					fmt.Printf("DEBUG: Ошибка записи в файл: %v\n", err)
 					os.Remove(fileName)
 					return ""
 				}
@@ -518,10 +611,12 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 
 				// Если получили меньше данных чем запросили, значит файл закончился
 				if len(data.Bytes) < chunkSize {
+					fmt.Printf("DEBUG: Получен последний чанк, файл скачан\n")
 					finished = true
 				}
 			}
 		case *tg.UploadFileCDNRedirect:
+			fmt.Printf("DEBUG: Получен CDN редирект, скачиваем через CDN\n")
 			// Скачиваем файл через CDN
 			cdnResp, err := api.UploadGetCDNFile(context.Background(), &tg.UploadGetCDNFileRequest{
 				FileToken: data.FileToken,
@@ -529,17 +624,23 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 				Limit:     chunkSize,
 			})
 			if err != nil {
+				fmt.Printf("DEBUG: Ошибка CDN запроса: %v\n", err)
 				os.Remove(fileName)
 				return ""
 			}
 
+			fmt.Printf("DEBUG: CDN ответ типа: %T\n", cdnResp)
+
 			switch cdnData := cdnResp.(type) {
 			case *tg.UploadCDNFile:
+				fmt.Printf("DEBUG: Получено %d байт данных через CDN\n", len(cdnData.Bytes))
 				if len(cdnData.Bytes) == 0 {
+					fmt.Printf("DEBUG: Получен пустой CDN чанк, файл скачан полностью\n")
 					finished = true
 				} else {
 					// Записываем чанк в файл
 					if _, err := f.Write(cdnData.Bytes); err != nil {
+						fmt.Printf("DEBUG: Ошибка записи CDN данных в файл: %v\n", err)
 						os.Remove(fileName)
 						return ""
 					}
@@ -548,14 +649,17 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 
 					// Если получили меньше данных чем запросили, значит файл закончился
 					if len(cdnData.Bytes) < chunkSize {
+						fmt.Printf("DEBUG: Получен последний CDN чанк, файл скачан\n")
 						finished = true
 					}
 				}
 			default:
+				fmt.Printf("DEBUG: Неожиданный тип CDN ответа: %T\n", cdnResp)
 				os.Remove(fileName)
 				return ""
 			}
 		default:
+			fmt.Printf("DEBUG: Неожиданный тип ответа: %T\n", resp)
 			// Неожиданный тип ответа
 			os.Remove(fileName)
 			return ""
@@ -566,12 +670,17 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 		}
 	}
 
+	fmt.Printf("DEBUG: Всего скачано байт: %d\n", totalBytes)
+
 	// Проверяем, что файл не пустой
 	if info, err := os.Stat(fileName); err != nil || info.Size() == 0 {
+		fmt.Printf("DEBUG: Файл пустой или не существует, удаляем\n")
 		os.Remove(fileName)
 		return ""
 	}
 
 	// Получаем информацию о файле для отладки
+	info, _ := os.Stat(fileName)
+	fmt.Printf("DEBUG: Файл успешно скачан: %s, размер: %d\n", fileName, info.Size())
 	return fileName
 }
