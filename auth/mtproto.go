@@ -249,8 +249,6 @@ func (m *MTProtoClient) GetDialogs(ctx context.Context) ([]Dialog, error) {
 		return nil, fmt.Errorf("ошибка получения диалогов: %w", err)
 	}
 
-	// Добавляем отладочную информацию
-
 	var result []Dialog
 
 	switch d := dialogs.(type) {
@@ -370,43 +368,107 @@ func (m *MTProtoClient) GetDialogs(ctx context.Context) ([]Dialog, error) {
 }
 
 // processMessage обрабатывает сообщение и определяет его тип
-func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass, peerID int64) Message {
-	ts := time.Unix(int64(message.Date), 0)
-	fromName := "Неизвестный"
+func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass, chats []tg.ChatClass, peerID int64) Message {
+	fmt.Printf("DEBUG: Processing Message - PeerID: %d, FromID: %+v\n", peerID, message.FromID)
+
+	fromName := ""
+
+	// Обработка различных типов FromID
 	if message.FromID != nil {
 		switch fromPeer := message.FromID.(type) {
 		case *tg.PeerUser:
+			// Поиск пользователя по ID
 			for _, userRaw := range users {
 				if u, ok := userRaw.(*tg.User); ok && u.ID == fromPeer.UserID {
-					fromName = u.Username
-					if fromName == "" {
-						fromName = strings.TrimSpace(u.FirstName + " " + u.LastName)
+					// Приоритет: Username → FirstName LastName → ID
+					if u.Username != "" {
+						fromName = u.Username
+						fmt.Println("DEBUG: Using Username")
+					} else {
+						fromName = strings.TrimSpace(fmt.Sprintf("%s %s", u.FirstName, u.LastName))
+						if fromName == "" {
+							fromName = fmt.Sprintf("User_%d", u.ID)
+						}
+						fmt.Println("DEBUG: Using FirstName LastName")
 					}
 					break
 				}
 			}
+
+		case *tg.PeerChat:
+			// Обработка сообщений в групповом чате
+			for _, chatRaw := range chats {
+				if c, ok := chatRaw.(*tg.Chat); ok && c.ID == fromPeer.ChatID {
+					fromName = c.Title
+					fmt.Println("DEBUG: Using Chat Title")
+					break
+				}
+			}
+
+			// Если название чата не найдено, используем generic идентификатор
+			if fromName == "" {
+				fromName = fmt.Sprintf("Chat_%d", fromPeer.ChatID)
+			}
+
+		case *tg.PeerChannel:
+			// Обработка сообщений в канале
+			for _, chatRaw := range chats {
+				if c, ok := chatRaw.(*tg.Channel); ok && c.ID == fromPeer.ChannelID {
+					fromName = c.Title
+					fmt.Println("DEBUG: Using Channel Title")
+					break
+				}
+			}
+
+			// Если название канала не найдено, используем generic идентификатор
+			if fromName == "" {
+				fromName = fmt.Sprintf("Channel_%d", fromPeer.ChannelID)
+			}
+
+		default:
+			fmt.Printf("DEBUG: Unexpected FromID type: %T\n", fromPeer)
+			fromName = "Unknown"
+		}
+	} else {
+		// Если FromID nil, пытаемся определить имя по PeerID
+		for _, userRaw := range users {
+			if u, ok := userRaw.(*tg.User); ok && u.ID == peerID {
+				if u.Username != "" {
+					fromName = u.Username
+				} else {
+					fromName = strings.TrimSpace(fmt.Sprintf("%s %s", u.FirstName, u.LastName))
+					if fromName == "" {
+						fromName = fmt.Sprintf("User_%d", u.ID)
+					}
+				}
+				break
+			}
+		}
+
+		// Если имя не найдено, используем generic идентификатор
+		if fromName == "" {
+			fromName = fmt.Sprintf("User_%d", peerID)
 		}
 	}
 
-	// Определяем тип сообщения и обрабатываем стикеры
+	ts := time.Unix(int64(message.Date), 0)
+
+	// Существующая логика обработки медиа
 	msgType := "text"
 	stickerID := int64(0)
 	stickerEmoji := ""
 	stickerPath := ""
 
-	// Проверяем, есть ли медиа в сообщении
 	if message.Media != nil {
 		switch media := message.Media.(type) {
 		case *tg.MessageMediaDocument:
 			if media.Document != nil {
 				if doc, ok := media.Document.(*tg.Document); ok {
-					// Проверяем, является ли документ стикером
 					for _, attr := range doc.Attributes {
 						if stickerAttr, ok := attr.(*tg.DocumentAttributeSticker); ok {
 							msgType = "sticker"
 							stickerID = doc.ID
 							stickerEmoji = stickerAttr.Alt
-							// Скачиваем стикер
 							stickerPath = downloadStickerFile(m.api, doc)
 							break
 						}
@@ -438,44 +500,83 @@ func (m *MTProtoClient) GetMessages(ctx context.Context, peerID int64, limit int
 	messagesCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Определяем тип peer по ID
-	var peer tg.InputPeerClass
+	var messagesRaw tg.MessagesMessagesClass
+	var err error
 
-	// Для простоты пока используем InputPeerUser, но можно доработать
-	// для определения типа peer по ID
-	peer = &tg.InputPeerUser{
-		UserID: peerID,
+	// Последовательно пробуем различные типы peer
+	peerTypes := []tg.InputPeerClass{
+		&tg.InputPeerUser{UserID: peerID},
+		&tg.InputPeerChat{ChatID: peerID},
 	}
 
-	messagesRaw, err := m.api.MessagesGetHistory(messagesCtx, &tg.MessagesGetHistoryRequest{
-		Peer:  peer,
-		Limit: limit,
+	// Для каналов требуется дополнительная информация об access hash
+	// Попробуем получить информацию о канале перед запросом
+	channelsResp, err := m.api.ChannelsGetChannels(messagesCtx, []tg.InputChannelClass{
+		&tg.InputChannel{
+			ChannelID: peerID,
+		},
 	})
+
+	if err == nil {
+		// Проверяем тип ответа и извлекаем информацию о канале
+		switch resp := channelsResp.(type) {
+		case *tg.MessagesChats:
+			for _, chat := range resp.Chats {
+				if channel, ok := chat.(*tg.Channel); ok {
+					peerTypes = append(peerTypes, &tg.InputPeerChannel{
+						ChannelID:  channel.ID,
+						AccessHash: channel.AccessHash,
+					})
+					break
+				}
+			}
+		}
+	}
+
+	// Пробуем получить сообщения для каждого типа peer
+	for _, peer := range peerTypes {
+		messagesRaw, err = m.api.MessagesGetHistory(messagesCtx, &tg.MessagesGetHistoryRequest{
+			Peer:  peer,
+			Limit: limit,
+		})
+
+		if err == nil {
+			break
+		}
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("ошибка получения сообщений: %w", err)
 	}
 
 	var result []Message
+	var users []tg.UserClass
+	var chats []tg.ChatClass
 
-	// Добавляем отладочную информацию
-
-	switch messages := messagesRaw.(type) {
-	case *tg.MessagesMessages:
-		for _, msgRaw := range messages.Messages {
+	// Определяем пользователей и чаты в зависимости от типа ответа
+	switch msg := messagesRaw.(type) {
+	case *tg.MessagesMessagesSlice:
+		users = msg.Users
+		chats = msg.Chats
+		for _, msgRaw := range msg.Messages {
 			if message, ok := msgRaw.(*tg.Message); ok {
-				result = append(result, m.processMessage(message, messages.Users, peerID))
+				result = append(result, m.processMessage(message, users, chats, peerID))
 			}
 		}
-	case *tg.MessagesMessagesSlice:
-		for _, msgRaw := range messages.Messages {
+	case *tg.MessagesMessages:
+		users = msg.Users
+		chats = msg.Chats
+		for _, msgRaw := range msg.Messages {
 			if message, ok := msgRaw.(*tg.Message); ok {
-				result = append(result, m.processMessage(message, messages.Users, peerID))
+				result = append(result, m.processMessage(message, users, chats, peerID))
 			}
 		}
 	case *tg.MessagesChannelMessages:
-		for _, msgRaw := range messages.Messages {
+		users = msg.Users
+		chats = msg.Chats
+		for _, msgRaw := range msg.Messages {
 			if message, ok := msgRaw.(*tg.Message); ok {
-				result = append(result, m.processMessage(message, messages.Users, peerID))
+				result = append(result, m.processMessage(message, users, chats, peerID))
 			}
 		}
 	default:
