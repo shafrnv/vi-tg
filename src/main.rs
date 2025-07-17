@@ -47,16 +47,12 @@ pub struct AuthStatus {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Инициализация логирования
     env_logger::init();
     
-    // Создаем API клиент
     let api_client = ApiClient::new("http://localhost:8080".to_string());
     
-    // Создаем приложение
     let mut app = App::new(api_client);
-    
-    // Запускаем TUI
+
     run_tui(&mut app).await?;
     
     Ok(())
