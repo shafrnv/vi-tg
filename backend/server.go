@@ -82,6 +82,8 @@ type MessageResponse struct {
 	StickerID    *int64  `json:"sticker_id"`
 	StickerEmoji *string `json:"sticker_emoji"`
 	StickerPath  *string `json:"sticker_path"`
+	ImageID      *int64  `json:"image_id"`
+	ImagePath    *string `json:"image_path"`
 }
 
 type MessagesResponse struct {
@@ -131,6 +133,9 @@ func (s *APIServer) Start() error {
 
 	// Sticker endpoints
 	api.HandleFunc("/stickers/{sticker_id}", s.getSticker).Methods("GET")
+
+	// Image endpoints
+	api.HandleFunc("/images/{image_id}", s.getImage).Methods("GET")
 
 	// Health check
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -353,6 +358,23 @@ func (s *APIServer) getMessages(w http.ResponseWriter, r *http.Request) {
 			msgResponse.StickerPath = &msg.StickerPath
 		}
 
+		// Add support for image paths
+		if msg.Type == "photo" {
+			imageID := int64(msg.ID)
+			// Всегда устанавливаем ImageID для фото
+			msgResponse.ImageID = &imageID
+
+			// Проверяем различные форматы изображений
+			possibleExtensions := []string{".png", ".jpg", ".jpeg", ".webp", ".gif"}
+			for _, ext := range possibleExtensions {
+				imagePath := fmt.Sprintf("/tmp/vi-tg_image_%d%s", imageID, ext)
+				if _, err := os.Stat(imagePath); err == nil {
+					msgResponse.ImagePath = &imagePath
+					break
+				}
+			}
+		}
+
 		messageResponses = append(messageResponses, msgResponse)
 	}
 
@@ -434,6 +456,62 @@ func (s *APIServer) getSticker(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(stickerPath)
 	if err != nil {
 		s.sendError(w, "Ошибка чтения файла стикера", http.StatusInternalServerError)
+		return
+	}
+
+	// Устанавливаем заголовки
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+
+	// Отправляем данные
+	w.Write(data)
+}
+
+func (s *APIServer) getImage(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	imageIDStr := vars["image_id"]
+	imageID, err := strconv.ParseInt(imageIDStr, 10, 64)
+	if err != nil {
+		s.sendError(w, "Неверный ID изображения", http.StatusBadRequest)
+		return
+	}
+
+	// Ищем файл изображения с различными расширениями
+	possibleExtensions := []string{".png", ".jpg", ".jpeg", ".webp", ".gif"}
+	var imagePath string
+	var contentType string
+
+	for _, ext := range possibleExtensions {
+		testPath := fmt.Sprintf("/tmp/vi-tg_image_%d%s", imageID, ext)
+		if _, err := os.Stat(testPath); err == nil {
+			imagePath = testPath
+			// Определяем MIME тип на основе расширения
+			switch ext {
+			case ".png":
+				contentType = "image/png"
+			case ".jpg", ".jpeg":
+				contentType = "image/jpeg"
+			case ".webp":
+				contentType = "image/webp"
+			case ".gif":
+				contentType = "image/gif"
+			default:
+				contentType = "image/png"
+			}
+			break
+		}
+	}
+
+	if imagePath == "" {
+		s.sendError(w, "Изображение не найдено", http.StatusNotFound)
+		return
+	}
+
+	// Читаем файл
+	data, err := os.ReadFile(imagePath)
+	if err != nil {
+		s.sendError(w, "Ошибка чтения файла изображения", http.StatusInternalServerError)
 		return
 	}
 

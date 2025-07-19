@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::time::{Duration, Instant};
+use std::collections::HashMap;
 
 use crate::api::ApiClient;
 use crate::{AuthStatus, Chat, Message};
@@ -14,7 +15,6 @@ pub enum AppState {
     Error,
 }
 
-#[derive(Debug)]
 pub struct App {
     pub api_client: ApiClient,
     pub state: AppState,
@@ -33,6 +33,9 @@ pub struct App {
     
     // Состояние ошибки
     pub error_message: String,
+    
+    // Изображения
+    pub image_paths: HashMap<i64, String>,
     
     // Таймеры для обновления
     pub last_update: Instant,
@@ -54,6 +57,7 @@ impl App {
             messages: Vec::new(),
             message_input: String::new(),
             error_message: String::new(),
+            image_paths: HashMap::new(),
             last_update: Instant::now(),
             last_auth_check: Instant::now(),
             last_data_refresh: Instant::now(),
@@ -217,10 +221,29 @@ impl App {
             match self.api_client.get_messages(chat.id, Some(50)).await {
                 Ok(messages) => {
                     self.messages = messages;
+                    // Загружаем пути к изображениям
+                    self.load_image_paths().await?;
                 }
                 Err(e) => {
                     log::error!("Ошибка загрузки сообщений: {}", e);
                     self.show_error(&format!("Ошибка загрузки сообщений: {}", e));
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    async fn load_image_paths(&mut self) -> Result<()> {
+        for msg in &self.messages {
+            if msg.r#type == "photo" {
+                if let Some(image_path) = &msg.image_path {
+                    if let Some(image_id) = msg.image_id {
+                        // Проверяем, не загружен ли уже путь к изображению
+                        if !self.image_paths.contains_key(&image_id) {
+                            self.image_paths.insert(image_id, image_path.clone());
+                        }
+                    }
                 }
             }
         }

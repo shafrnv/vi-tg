@@ -1,7 +1,7 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
@@ -36,8 +36,7 @@ fn draw_loading_screen(f: &mut Frame, _app: &App) {
     
     let paragraph = Paragraph::new(text)
         .block(block)
-        .wrap(Wrap { trim: true })
-        .alignment(ratatui::layout::Alignment::Center);
+        .wrap(Wrap { trim: true });
     
     f.render_widget(paragraph, area);
 }
@@ -57,8 +56,7 @@ fn draw_phone_input(f: &mut Frame, app: &App) {
     // Заголовок
     let title = Paragraph::new("Авторизация в Telegram")
         .block(Block::default().borders(Borders::ALL))
-        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-        .alignment(ratatui::layout::Alignment::Center);
+        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
     f.render_widget(title, chunks[0]);
     
     // Основная область
@@ -73,8 +71,7 @@ fn draw_phone_input(f: &mut Frame, app: &App) {
         .split(chunks[1]);
     
     let instruction = Paragraph::new("Введите номер телефона с кодом страны (например: +7 999 123 45 67):")
-        .style(Style::default().fg(Color::White))
-        .alignment(ratatui::layout::Alignment::Center);
+        .style(Style::default().fg(Color::White));
     f.render_widget(instruction, main_chunks[0]);
     
     // Поле ввода
@@ -86,8 +83,7 @@ fn draw_phone_input(f: &mut Frame, app: &App) {
     
     // Статус
     let status = Paragraph::new("Enter: подтвердить | Esc: выход")
-        .style(Style::default().fg(Color::Gray))
-        .alignment(ratatui::layout::Alignment::Center);
+        .style(Style::default().fg(Color::Gray));
     f.render_widget(status, chunks[2]);
 }
 
@@ -106,8 +102,7 @@ fn draw_code_input(f: &mut Frame, app: &App) {
     // Заголовок
     let title = Paragraph::new("Код подтверждения")
         .block(Block::default().borders(Borders::ALL))
-        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-        .alignment(ratatui::layout::Alignment::Center);
+        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
     f.render_widget(title, chunks[0]);
     
     // Основная область
@@ -122,8 +117,7 @@ fn draw_code_input(f: &mut Frame, app: &App) {
         .split(chunks[1]);
     
     let instruction = Paragraph::new("Введите код, который был отправлен на ваш номер телефона:")
-        .style(Style::default().fg(Color::White))
-        .alignment(ratatui::layout::Alignment::Center);
+        .style(Style::default().fg(Color::White));
     f.render_widget(instruction, main_chunks[0]);
     
     // Поле ввода
@@ -135,8 +129,7 @@ fn draw_code_input(f: &mut Frame, app: &App) {
     
     // Статус
     let status = Paragraph::new("Enter: подтвердить | Esc: назад")
-        .style(Style::default().fg(Color::Gray))
-        .alignment(ratatui::layout::Alignment::Center);
+        .style(Style::default().fg(Color::Gray));
     f.render_widget(status, chunks[2]);
 }
 
@@ -202,52 +195,133 @@ fn draw_chat_list(f: &mut Frame, app: &App, area: Rect) {
 fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
     let title = app.get_current_chat_title();
     
-    let messages_text: Vec<Line> = app.messages
-        .iter()
-        .map(|msg| {
-            let timestamp = msg.timestamp.split('T').next().unwrap_or(&msg.timestamp);
-            let time = timestamp.split(' ').last().unwrap_or(timestamp);
-            
-            match msg.r#type.as_str() {
-                "sticker" => {
-                    let sticker_text = if let Some(emoji) = &msg.sticker_emoji {
-                        format!("{} [стикер]", emoji)
-                    } else {
-                        "[стикер]".to_string()
-                    };
-                    
-                    Line::from(vec![
-                        Span::styled(
-                            format!("{:5} {:12}: ", time, msg.from),
-                            Style::default().fg(Color::Gray)
-                        ),
-                        Span::styled(
-                            sticker_text,
-                            Style::default().fg(Color::Magenta)
-                        ),
-                    ])
-                }
-                _ => {
-                    Line::from(vec![
-                        Span::styled(
-                            format!("{:5} {:12}: ", time, msg.from),
-                            Style::default().fg(Color::Gray)
-                        ),
-                        Span::styled(
-                            msg.text.clone(),
-                            Style::default().fg(Color::White)
-                        ),
-                    ])
-                }
+    // Создаем область для сообщений с отступами
+    let messages_area = area;
+    
+    // Вычисляем высоту для каждого сообщения
+    let message_height = 3; // базовая высота для текстового сообщения
+    let image_height = 15; // высота для изображения
+    
+    let mut y_offset = 0;
+    let mut remaining_height = messages_area.height as i32;
+    
+    // Отображаем сообщения сверху вниз
+    for (_i, msg) in app.messages.iter().enumerate() {
+        if remaining_height <= 0 {
+            break;
+        }
+        
+        let timestamp = msg.timestamp.split('T').next().unwrap_or(&msg.timestamp);
+        let time = timestamp.split(' ').last().unwrap_or(timestamp);
+        
+        let current_height = if msg.r#type == "photo" { image_height } else { message_height };
+        
+        if remaining_height < current_height {
+            break;
+        }
+        
+        let message_area = Rect {
+            x: messages_area.x,
+            y: messages_area.y + y_offset as u16,
+            width: messages_area.width,
+            height: current_height as u16,
+        };
+        
+        match msg.r#type.as_str() {
+            "sticker" => {
+                let sticker_text = if let Some(emoji) = &msg.sticker_emoji {
+                    format!("{} [стикер]", emoji)
+                } else {
+                    "[стикер]".to_string()
+                };
+                
+                let text_content = format!("{} {}: {}", time, msg.from, sticker_text);
+                let text_widget = Paragraph::new(text_content)
+                    .style(Style::default().fg(Color::Magenta))
+                    .block(Block::default().borders(Borders::ALL).style(Style::default().fg(Color::Gray)))
+                    .wrap(Wrap { trim: true });
+                
+                f.render_widget(text_widget, message_area);
             }
-        })
-        .collect();
+            "photo" => {
+                // Вычисляем точную ширину для текста
+                let text_content = format!("{} {}:", time, msg.from);
+                let text_width = text_content.len() as u16 + 2; // +2 для небольшого отступа
+                
+                // Текстовая часть сообщения с изображением (слева)
+                let text_area = Rect {
+                    x: message_area.x + 1,
+                    y: message_area.y + 1,
+                    width: text_width.min(message_area.width / 2), // ограничиваем максимальную ширину
+                    height: message_area.height - 2,
+                };
+                
+                let text_widget = Paragraph::new(text_content)
+                    .style(Style::default().fg(Color::Yellow))
+                    .wrap(Wrap { trim: true });
+                
+                f.render_widget(text_widget, text_area);
+                
+                // Изображение (справа, сразу после текста)
+                let image_area = Rect {
+                    x: text_area.x + text_area.width + 1, // уменьшаем отступ
+                    y: message_area.y + 1,
+                    width: message_area.width - text_area.width - 3, // корректируем ширину
+                    height: message_area.height - 2,
+                };
+                
+                // Отображаем изображение если есть ID
+                if let Some(image_id) = msg.image_id {
+                    if let Some(image_path) = &msg.image_path {
+                        // Проверяем, существует ли файл
+                        if std::path::Path::new(image_path).exists() {
+                            let placeholder = Paragraph::new("[📷 Изображение]")
+                                .style(Style::default().fg(Color::Green));
+                            f.render_widget(placeholder, image_area);
+                        } else {
+                            let placeholder = Paragraph::new("[📷 Загрузка...]")
+                                .style(Style::default().fg(Color::Yellow));
+                            f.render_widget(placeholder, image_area);
+                        }
+                    } else {
+                        let placeholder = Paragraph::new("[📷 Скачивание...]")
+                            .style(Style::default().fg(Color::Blue));
+                        f.render_widget(placeholder, image_area);
+                    }
+                } else {
+                    let placeholder = Paragraph::new("[📷 Ошибка]")
+                        .style(Style::default().fg(Color::Red));
+                    f.render_widget(placeholder, image_area);
+                }
+                
+                // Общая граница для всего сообщения
+                let message_block = Block::default()
+                    .borders(Borders::ALL)
+                    .style(Style::default().fg(Color::Gray));
+                f.render_widget(message_block, message_area);
+            }
+            _ => {
+                // Обычное текстовое сообщение
+                let text_content = format!("{} {}: {}", time, msg.from, msg.text);
+                let text_widget = Paragraph::new(text_content)
+                    .style(Style::default().fg(Color::White))
+                    .block(Block::default().borders(Borders::ALL).style(Style::default().fg(Color::Gray)))
+                    .wrap(Wrap { trim: true });
+                
+                f.render_widget(text_widget, message_area);
+            }
+        }
+        
+        y_offset += current_height;
+        remaining_height -= current_height;
+    }
     
-    let messages = Paragraph::new(messages_text)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .wrap(Wrap { trim: true });
-    
-    f.render_widget(messages, area);
+    // Граница для области сообщений
+    let messages_block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::White));
+    f.render_widget(messages_block, area);
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
@@ -286,8 +360,7 @@ fn draw_error_screen(f: &mut Frame, app: &App) {
     // Заголовок
     let title = Paragraph::new("Ошибка")
         .block(Block::default().borders(Borders::ALL))
-        .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
-        .alignment(ratatui::layout::Alignment::Center);
+        .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
     f.render_widget(title, chunks[0]);
     
     // Сообщение об ошибке
@@ -301,14 +374,12 @@ fn draw_error_screen(f: &mut Frame, app: &App) {
     let error_msg = Paragraph::new(error_text)
         .block(Block::default().borders(Borders::ALL).title("Подробности"))
         .style(Style::default().fg(Color::Red))
-        .alignment(ratatui::layout::Alignment::Center)
         .wrap(Wrap { trim: true });
     
     f.render_widget(error_msg, chunks[1]);
     
     // Статус
     let status = Paragraph::new("Любая клавиша: продолжить | q: выход")
-        .style(Style::default().fg(Color::Gray))
-        .alignment(ratatui::layout::Alignment::Center);
+        .style(Style::default().fg(Color::Gray));
     f.render_widget(status, chunks[2]);
 } 
