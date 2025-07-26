@@ -68,7 +68,7 @@ impl App {
         let now = Instant::now();
         
         // Проверяем авторизацию каждые 2 секунды
-        if now.duration_since(self.last_auth_check) > Duration::from_secs(2) {
+        if now.duration_since(self.last_auth_check)_corrupted_image > Duration::from_secs(2) {
             self.check_auth_status().await?;
             self.last_auth_check = now;
         }

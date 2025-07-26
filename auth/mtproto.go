@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
-	"log"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -17,6 +16,18 @@ import (
 	"github.com/gotd/td/tg"
 	"golang.org/x/crypto/ssh/terminal"
 )
+
+// debugLog записывает отладочные сообщения в файл
+func debugLog(format string, args ...interface{}) {
+	message := fmt.Sprintf(format, args...)
+	timestamp := time.Now().Format("2006-01-02 15:04:05.000")
+	logMessage := fmt.Sprintf("[%s] %s\n", timestamp, message)
+
+	if file, err := os.OpenFile("/tmp/vi-tg-debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		defer file.Close()
+		file.WriteString(logMessage)
+	}
+}
 
 type MTProtoClient struct {
 	client   *telegram.Client
@@ -462,9 +473,12 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 	stickerPath := ""
 	imagePath := ""
 
+	debugLog("Обрабатываем сообщение %d, медиа: %v", message.ID, message.Media != nil)
+
 	if message.Media != nil {
 		switch media := message.Media.(type) {
 		case *tg.MessageMediaDocument:
+			debugLog("Сообщение %d содержит документ", message.ID)
 			if media.Document != nil {
 				if doc, ok := media.Document.(*tg.Document); ok {
 					for _, attr := range doc.Attributes {
@@ -473,22 +487,28 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 							stickerID = doc.ID
 							stickerEmoji = stickerAttr.Alt
 							stickerPath = downloadStickerFile(m.api, doc)
+							debugLog("Сообщение %d содержит стикер: %s", message.ID, stickerEmoji)
 							break
 						}
 					}
 				}
 			}
 		case *tg.MessageMediaPhoto:
+			debugLog("Сообщение %d содержит фото", message.ID)
 			if photo, ok := media.Photo.(*tg.Photo); ok {
 				msgType = "photo"
 				imagePath = downloadPhotoFile(m.api, photo, message.ID)
 				if imagePath == "" {
-					log.Printf("Не удалось скачать фото для сообщения %d", message.ID)
+					debugLog("Не удалось скачать фото для сообщения %d", message.ID)
 				} else {
-					log.Printf("Фото скачано: %s", imagePath)
+					debugLog("Фото скачано: %s", imagePath)
 				}
 			}
+		default:
+			debugLog("Сообщение %d содержит неизвестный тип медиа: %T", message.ID, media)
 		}
+	} else {
+		debugLog("Сообщение %d не содержит медиа", message.ID)
 	}
 
 	return Message{
@@ -781,11 +801,21 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 // downloadPhotoFile скачивает фото и сохраняет как PNG
 func downloadPhotoFile(api *tg.Client, photo *tg.Photo, messageID int) string {
 	if api == nil || photo == nil {
-		log.Printf("DEBUG: API или фото nil для сообщения %d", messageID)
+		debugLog("API или фото nil для сообщения %d", messageID)
 		return ""
 	}
 
-	log.Printf("DEBUG: Начинаем скачивание фото для сообщения %d, Photo ID: %d", messageID, photo.ID)
+	debugLog("Начинаем скачивание фото для сообщения %d, Photo ID: %d", messageID, photo.ID)
+
+	// Проверяем, не скачан ли уже файл
+	possibleExtensions := []string{".jpg", ".jpeg", ".png", ".webp", ".gif"}
+	for _, ext := range possibleExtensions {
+		existingPath := fmt.Sprintf("/tmp/vi-tg_image_%d%s", messageID, ext)
+		if _, err := os.Stat(existingPath); err == nil {
+			debugLog("Файл уже существует: %s", existingPath)
+			return existingPath
+		}
+	}
 
 	// Собираем все доступные размеры
 	var sizes []struct {
@@ -794,7 +824,7 @@ func downloadPhotoFile(api *tg.Client, photo *tg.Photo, messageID int) string {
 		desc     string
 	}
 
-	log.Printf("DEBUG: Количество размеров фото: %d", len(photo.Sizes))
+	debugLog("Количество размеров фото: %d", len(photo.Sizes))
 
 	for i, sizeRaw := range photo.Sizes {
 		var width int
@@ -805,7 +835,7 @@ func downloadPhotoFile(api *tg.Client, photo *tg.Photo, messageID int) string {
 		case *tg.PhotoSize:
 			width = size.W
 			desc = fmt.Sprintf("PhotoSize(%s)", size.Type)
-			log.Printf("DEBUG: Размер %d: PhotoSize, ширина: %d, тип: %s", i, width, size.Type)
+			debugLog("Размер %d: PhotoSize, ширина: %d, тип: %s", i, width, size.Type)
 			// Для PhotoSize используем InputPhotoFileLocation с ThumbSize
 			location = &tg.InputPhotoFileLocation{
 				ID:            photo.ID,
@@ -816,7 +846,7 @@ func downloadPhotoFile(api *tg.Client, photo *tg.Photo, messageID int) string {
 		case *tg.PhotoSizeProgressive:
 			width = size.W
 			desc = "PhotoSizeProgressive"
-			log.Printf("DEBUG: Размер %d: PhotoSizeProgressive, ширина: %d", i, width)
+			debugLog("Размер %d: PhotoSizeProgressive, ширина: %d", i, width)
 			// Для PhotoSizeProgressive используем InputPhotoFileLocation без ThumbSize
 			location = &tg.InputPhotoFileLocation{
 				ID:            photo.ID,
@@ -825,11 +855,11 @@ func downloadPhotoFile(api *tg.Client, photo *tg.Photo, messageID int) string {
 				ThumbSize:     "", // Пустая строка для полного размера
 			}
 		case *tg.PhotoSizeEmpty:
-			log.Printf("DEBUG: Размер %d: PhotoSizeEmpty", i)
+			debugLog("Размер %d: PhotoSizeEmpty", i)
 			continue
 		case *tg.PhotoStrippedSize:
 			desc = fmt.Sprintf("PhotoStrippedSize(%s)", size.Type)
-			log.Printf("DEBUG: Размер %d: PhotoStrippedSize, тип: %s", i, size.Type)
+			debugLog("Размер %d: PhotoStrippedSize, тип: %s", i, size.Type)
 			// Для PhotoStrippedSize используем InputPhotoFileLocation с ThumbSize
 			location = &tg.InputPhotoFileLocation{
 				ID:            photo.ID,
@@ -839,7 +869,7 @@ func downloadPhotoFile(api *tg.Client, photo *tg.Photo, messageID int) string {
 			}
 			width = 0 // PhotoStrippedSize не имеет ширины
 		default:
-			log.Printf("DEBUG: Размер %d: неизвестный тип %T", i, sizeRaw)
+			debugLog("Размер %d: неизвестный тип %T", i, sizeRaw)
 			continue
 		}
 
@@ -859,18 +889,21 @@ func downloadPhotoFile(api *tg.Client, photo *tg.Photo, messageID int) string {
 		}
 	}
 
+	debugLog("Найдено %d размеров для скачивания", len(sizes))
+
 	// Пробуем скачать с каждого размера, начиная с наибольшего
-	for _, size := range sizes {
-		log.Printf("DEBUG: Пробуем скачать размер %s (ширина: %d)", size.desc, size.width)
-		result := downloadFileWithLocation(api, size.location, messageID, ".png")
+	for i, size := range sizes {
+		debugLog("Пробуем скачать размер %d/%d: %s (ширина: %d)", i+1, len(sizes), size.desc, size.width)
+		// Передаем пустую строку, чтобы функция сама определила формат
+		result := downloadFileWithLocation(api, size.location, messageID, "")
 		if result != "" {
-			log.Printf("DEBUG: Успешно скачан размер %s: %s", size.desc, result)
+			debugLog("Успешно скачан размер %s: %s", size.desc, result)
 			return result
 		}
-		log.Printf("DEBUG: Не удалось скачать размер %s", size.desc)
+		debugLog("Не удалось скачать размер %s", size.desc)
 	}
 
-	log.Printf("DEBUG: Не удалось скачать ни один размер для фото сообщения %d", messageID)
+	debugLog("Не удалось скачать ни один размер для фото сообщения %d", messageID)
 	return ""
 }
 
@@ -879,12 +912,12 @@ func downloadFileWithLocation(api *tg.Client, location tg.InputFileLocationClass
 	// Сначала скачиваем во временный файл
 	tempFileName := fmt.Sprintf("/tmp/vi-tg_image_%d_temp", messageID)
 
-	log.Printf("DEBUG: Начинаем скачивание во временный файл: %s", tempFileName)
+	debugLog("Начинаем скачивание во временный файл: %s", tempFileName)
 
 	// Создаем временный файл
 	f, err := os.Create(tempFileName)
 	if err != nil {
-		log.Printf("DEBUG: Ошибка создания временного файла %s: %v", tempFileName, err)
+		debugLog("Ошибка создания временного файла %s: %v", tempFileName, err)
 		return ""
 	}
 	defer f.Close()
@@ -894,8 +927,14 @@ func downloadFileWithLocation(api *tg.Client, location tg.InputFileLocationClass
 	chunkSize := int(512 * 1024) // 512KB чанки
 	totalBytes := int64(0)
 	finished := false
+	chunkCount := 0
+
+	debugLog("Начинаем скачивание файла по частям")
 
 	for !finished {
+		chunkCount++
+		debugLog("Скачиваем чанк %d, offset: %d", chunkCount, offset)
+
 		resp, err := api.UploadGetFile(context.Background(), &tg.UploadGetFileRequest{
 			Precise:      true,
 			CDNSupported: false, // Отключаем CDN поддержку
@@ -907,12 +946,12 @@ func downloadFileWithLocation(api *tg.Client, location tg.InputFileLocationClass
 		if err != nil {
 			// Проверяем, является ли ошибка связанной с истекшим file reference
 			if strings.Contains(err.Error(), "FILE_REFERENCE_EXPIRED") {
-				log.Printf("DEBUG: File reference expired для сообщения %d", messageID)
+				debugLog("File reference expired для сообщения %d", messageID)
 				os.Remove(tempFileName)
 				return ""
 			}
 
-			log.Printf("DEBUG: Ошибка скачивания файла для сообщения %d: %v", messageID, err)
+			debugLog("Ошибка скачивания файла для сообщения %d: %v", messageID, err)
 			os.Remove(tempFileName)
 			return ""
 		}
@@ -922,22 +961,27 @@ func downloadFileWithLocation(api *tg.Client, location tg.InputFileLocationClass
 		case *tg.UploadFile:
 			if len(file.Bytes) == 0 {
 				// Файл скачан полностью
+				debugLog("Получен пустой чанк, файл скачан полностью")
 				finished = true
 			} else {
 				// Записываем чанк в файл
 				if _, err := f.Write(file.Bytes); err != nil {
+					debugLog("Ошибка записи чанка в файл: %v", err)
 					os.Remove(tempFileName)
 					return ""
 				}
 				offset += int64(len(file.Bytes))
 				totalBytes += int64(len(file.Bytes))
+				debugLog("Записан чанк %d, размер: %d байт, общий размер: %d байт", chunkCount, len(file.Bytes), totalBytes)
 
 				// Если получили меньше данных чем запросили, значит файл закончился
 				if len(file.Bytes) < chunkSize {
+					debugLog("Получен последний чанк, файл закончен")
 					finished = true
 				}
 			}
 		case *tg.UploadFileCDNRedirect:
+			debugLog("Получен CDN редирект")
 			// Скачиваем файл через CDN
 			cdnResp, err := api.UploadGetCDNFile(context.Background(), &tg.UploadGetCDNFileRequest{
 				FileToken: file.FileToken,
@@ -945,6 +989,7 @@ func downloadFileWithLocation(api *tg.Client, location tg.InputFileLocationClass
 				Limit:     chunkSize,
 			})
 			if err != nil {
+				debugLog("Ошибка скачивания через CDN: %v", err)
 				os.Remove(tempFileName)
 				return ""
 			}
@@ -952,33 +997,42 @@ func downloadFileWithLocation(api *tg.Client, location tg.InputFileLocationClass
 			switch cdnData := cdnResp.(type) {
 			case *tg.UploadCDNFile:
 				if len(cdnData.Bytes) == 0 {
+					debugLog("Получен пустой CDN чанк, файл скачан полностью")
 					finished = true
 				} else {
 					// Записываем чанк в файл
 					if _, err := f.Write(cdnData.Bytes); err != nil {
+						debugLog("Ошибка записи CDN чанка в файл: %v", err)
 						os.Remove(tempFileName)
 						return ""
 					}
 					offset += int64(len(cdnData.Bytes))
 					totalBytes += int64(len(cdnData.Bytes))
+					debugLog("Записан CDN чанк %d, размер: %d байт, общий размер: %d байт", chunkCount, len(cdnData.Bytes), totalBytes)
 
 					// Если получили меньше данных чем запросили, значит файл закончился
 					if len(cdnData.Bytes) < chunkSize {
+						debugLog("Получен последний CDN чанк, файл закончен")
 						finished = true
 					}
 				}
 			default:
+				debugLog("Неожиданный тип CDN ответа: %T", cdnResp)
 				os.Remove(tempFileName)
 				return ""
 			}
 		default:
+			debugLog("Неожиданный тип ответа: %T", resp)
 			os.Remove(tempFileName)
 			return ""
 		}
 	}
 
+	debugLog("Скачивание завершено, общий размер: %d байт", totalBytes)
+
 	// Проверяем, что файл не пустой
 	if info, err := os.Stat(tempFileName); err != nil || info.Size() == 0 {
+		debugLog("Файл пустой или не существует: %v", err)
 		os.Remove(tempFileName)
 		return ""
 	}
@@ -988,18 +1042,21 @@ func downloadFileWithLocation(api *tg.Client, location tg.InputFileLocationClass
 	if detectedExt == "" {
 		// Если формат не определен, используем PNG как fallback
 		detectedExt = ".png"
+		debugLog("Формат не определен, используем PNG")
+	} else {
+		debugLog("Определен формат: %s", detectedExt)
 	}
 
 	// Переименовываем файл с правильным расширением
 	finalFileName := fmt.Sprintf("/tmp/vi-tg_image_%d%s", messageID, detectedExt)
 
 	if err := os.Rename(tempFileName, finalFileName); err != nil {
-		log.Printf("DEBUG: Ошибка переименования файла %s в %s: %v", tempFileName, finalFileName, err)
+		debugLog("Ошибка переименования файла %s в %s: %v", tempFileName, finalFileName, err)
 		os.Remove(tempFileName)
 		return ""
 	}
 
-	log.Printf("DEBUG: Файл успешно сохранен как %s", finalFileName)
+	debugLog("Файл успешно сохранен как %s", finalFileName)
 	return finalFileName
 }
 

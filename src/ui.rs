@@ -5,6 +5,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
+use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
 
 use crate::app::{App, AppState};
 
@@ -14,7 +15,7 @@ pub fn draw_ui(f: &mut Frame, app: &App) {
         AppState::PhoneInput => draw_phone_input(f, app),
         AppState::CodeInput => draw_code_input(f, app),
         AppState::Main => draw_main_screen(f, app),
-        AppState::MessageInput => draw_main_screen(f, app), // Основной экран с полем ввода
+        AppState::MessageInput => draw_main_screen(f, app),
         AppState::Error => draw_error_screen(f, app),
     }
 }
@@ -53,13 +54,11 @@ fn draw_phone_input(f: &mut Frame, app: &App) {
         ])
         .split(area);
     
-    // Заголовок
     let title = Paragraph::new("Авторизация в Telegram")
         .block(Block::default().borders(Borders::ALL))
         .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
     f.render_widget(title, chunks[0]);
     
-    // Основная область
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -74,14 +73,12 @@ fn draw_phone_input(f: &mut Frame, app: &App) {
         .style(Style::default().fg(Color::White));
     f.render_widget(instruction, main_chunks[0]);
     
-    // Поле ввода
     let input_text = format!("Номер: {}", app.phone_input);
     let input = Paragraph::new(input_text)
         .block(Block::default().borders(Borders::ALL).title("Ввод"))
         .style(Style::default().fg(Color::Green));
     f.render_widget(input, main_chunks[1]);
     
-    // Статус
     let status = Paragraph::new("Enter: подтвердить | Esc: выход")
         .style(Style::default().fg(Color::Gray));
     f.render_widget(status, chunks[2]);
@@ -99,13 +96,11 @@ fn draw_code_input(f: &mut Frame, app: &App) {
         ])
         .split(area);
     
-    // Заголовок
     let title = Paragraph::new("Код подтверждения")
         .block(Block::default().borders(Borders::ALL))
         .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
     f.render_widget(title, chunks[0]);
     
-    // Основная область
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -120,14 +115,12 @@ fn draw_code_input(f: &mut Frame, app: &App) {
         .style(Style::default().fg(Color::White));
     f.render_widget(instruction, main_chunks[0]);
     
-    // Поле ввода
     let input_text = format!("Код: {} ({})", app.code_input, app.code_input.len());
     let input = Paragraph::new(input_text)
         .block(Block::default().borders(Borders::ALL).title("Ввод"))
         .style(Style::default().fg(Color::Green));
     f.render_widget(input, main_chunks[1]);
     
-    // Статус
     let status = Paragraph::new("Enter: подтвердить | Esc: назад")
         .style(Style::default().fg(Color::Gray));
     f.render_widget(status, chunks[2]);
@@ -152,13 +145,8 @@ fn draw_main_screen(f: &mut Frame, app: &App) {
         ])
         .split(chunks[0]);
     
-    // Левая панель - список чатов
     draw_chat_list(f, app, main_chunks[0]);
-    
-    // Правая панель - сообщения
     draw_messages(f, app, main_chunks[1]);
-    
-    // Нижняя панель - статус или поле ввода
     draw_status_bar(f, app, chunks[1]);
 }
 
@@ -195,37 +183,40 @@ fn draw_chat_list(f: &mut Frame, app: &App, area: Rect) {
 fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
     let title = app.get_current_chat_title();
     
-    // Создаем область для сообщений с отступами
-    let messages_area = area;
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
     
-    // Вычисляем высоту для каждого сообщения
-    let message_height = 3; // базовая высота для текстового сообщения
-    let image_height = 15; // высота для изображения
+    let message_height = 1; // базовая высота для сообщения
+    let image_height = 12; // высота для изображения
     
     let mut y_offset = 0;
-    let mut remaining_height = messages_area.height as i32;
+    let available_height = inner_area.height as i32;
+
+    let picker = match Picker::from_query_stdio() {
+        Ok(p) => Some(p),
+        Err(_) => None,
+    };
     
-    // Отображаем сообщения сверху вниз
-    for (_i, msg) in app.messages.iter().enumerate() {
-        if remaining_height <= 0 {
-            break;
-        }
-        
-        let timestamp = msg.timestamp.split('T').next().unwrap_or(&msg.timestamp);
-        let time = timestamp.split(' ').last().unwrap_or(timestamp);
-        
+    for (i, msg) in app.messages.iter().enumerate() {
         let current_height = if msg.r#type == "photo" { image_height } else { message_height };
         
-        if remaining_height < current_height {
+        if y_offset + current_height > available_height {
             break;
         }
         
         let message_area = Rect {
-            x: messages_area.x,
-            y: messages_area.y + y_offset as u16,
-            width: messages_area.width,
+            x: inner_area.x,
+            y: inner_area.y + y_offset as u16,
+            width: inner_area.width,
             height: current_height as u16,
         };
+        
+        let timestamp = msg.timestamp.split('T').next().unwrap_or(&msg.timestamp);
+        let time = msg.timestamp.split(' ').last().unwrap_or("00:00");
         
         match msg.r#type.as_str() {
             "sticker" => {
@@ -238,74 +229,18 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
                 let text_content = format!("{} {}: {}", time, msg.from, sticker_text);
                 let text_widget = Paragraph::new(text_content)
                     .style(Style::default().fg(Color::Magenta))
-                    .block(Block::default().borders(Borders::ALL).style(Style::default().fg(Color::Gray)))
                     .wrap(Wrap { trim: true });
                 
                 f.render_widget(text_widget, message_area);
             }
             "photo" => {
-                // Вычисляем точную ширину для текста
-                let text_content = format!("{} {}:", time, msg.from);
-                let text_width = text_content.len() as u16 + 2; // +2 для небольшого отступа
-                
-                // Текстовая часть сообщения с изображением (слева)
-                let text_area = Rect {
-                    x: message_area.x + 1,
-                    y: message_area.y + 1,
-                    width: text_width.min(message_area.width / 2), // ограничиваем максимальную ширину
-                    height: message_area.height - 2,
-                };
-                
-                let text_widget = Paragraph::new(text_content)
-                    .style(Style::default().fg(Color::Yellow))
-                    .wrap(Wrap { trim: true });
-                
-                f.render_widget(text_widget, text_area);
-                
-                // Изображение (справа, сразу после текста)
-                let image_area = Rect {
-                    x: text_area.x + text_area.width + 1, // уменьшаем отступ
-                    y: message_area.y + 1,
-                    width: message_area.width - text_area.width - 3, // корректируем ширину
-                    height: message_area.height - 2,
-                };
-                
-                // Отображаем изображение если есть ID
-                if let Some(image_id) = msg.image_id {
-                    if let Some(image_path) = &msg.image_path {
-                        // Проверяем, существует ли файл
-                        if std::path::Path::new(image_path).exists() {
-                            let placeholder = Paragraph::new("[📷 Изображение]")
-                                .style(Style::default().fg(Color::Green));
-                            f.render_widget(placeholder, image_area);
-                        } else {
-                            let placeholder = Paragraph::new("[📷 Загрузка...]")
-                                .style(Style::default().fg(Color::Yellow));
-                            f.render_widget(placeholder, image_area);
-                        }
-                    } else {
-                        let placeholder = Paragraph::new("[📷 Скачивание...]")
-                            .style(Style::default().fg(Color::Blue));
-                        f.render_widget(placeholder, image_area);
-                    }
-                } else {
-                    let placeholder = Paragraph::new("[📷 Ошибка]")
-                        .style(Style::default().fg(Color::Red));
-                    f.render_widget(placeholder, image_area);
-                }
-                
-                // Общая граница для всего сообщения
-                let message_block = Block::default()
-                    .borders(Borders::ALL)
-                    .style(Style::default().fg(Color::Gray));
-                f.render_widget(message_block, message_area);
+                draw_photo_message(f, msg, message_area, time, picker.as_ref());
             }
             _ => {
                 // Обычное текстовое сообщение
                 let text_content = format!("{} {}: {}", time, msg.from, msg.text);
                 let text_widget = Paragraph::new(text_content)
                     .style(Style::default().fg(Color::White))
-                    .block(Block::default().borders(Borders::ALL).style(Style::default().fg(Color::Gray)))
                     .wrap(Wrap { trim: true });
                 
                 f.render_widget(text_widget, message_area);
@@ -313,7 +248,6 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
         }
         
         y_offset += current_height;
-        remaining_height -= current_height;
     }
     
     // Граница для области сообщений
@@ -322,6 +256,81 @@ fn draw_messages(f: &mut Frame, app: &App, area: Rect) {
         .borders(Borders::ALL)
         .style(Style::default().fg(Color::White));
     f.render_widget(messages_block, area);
+}
+
+fn draw_photo_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, picker: Option<&Picker>) {
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+    let text_content = format!("{} {}:", time, msg.from);
+    let text_area = Rect {
+        x: inner_area.x,
+        y: inner_area.y,
+        width: inner_area.width,
+        height: 1,
+    };
+    
+    let text_widget = Paragraph::new(text_content)
+        .style(Style::default().fg(Color::Yellow));
+    f.render_widget(text_widget, text_area);
+
+    let image_area = Rect {
+        x: inner_area.x,
+        y: inner_area.y + 1,
+        width: inner_area.width,
+        height: inner_area.height.saturating_sub(1),
+    };
+
+    if let Some(image_path) = &msg.image_path {
+        if let Some(picker) = picker {
+            match try_display_image(image_path, picker, image_area) {
+                Ok(mut protocol) => {
+                    let image_widget = StatefulImage::new();
+                    f.render_stateful_widget(image_widget, image_area, &mut protocol);
+                }
+                Err(e) => {
+                    let error_text = format!("[📷 Ошибка: {}]", e);
+                    let error_widget = Paragraph::new(error_text)
+                        .style(Style::default().fg(Color::Red));
+                    f.render_widget(error_widget, image_area);
+                }
+            }
+        } else {
+            let placeholder = Paragraph::new("[📷 Терминал не поддерживает изображения]")
+                .style(Style::default().fg(Color::Yellow));
+            f.render_widget(placeholder, image_area);
+        }
+    } else {
+        let placeholder = Paragraph::new("[📷 Загрузка...]")
+            .style(Style::default().fg(Color::Blue));
+        f.render_widget(placeholder, image_area);
+    }
+    
+    let message_block = Block::default();
+    f.render_widget(message_block, area);
+}
+
+fn try_display_image(image_path: &str, picker: &Picker, area: Rect) -> Result<StatefulProtocol, String> {
+    if !std::path::Path::new(image_path).exists() {
+        return Err("файл не найден".to_string());
+    }
+    
+    let metadata = std::fs::metadata(image_path)
+        .map_err(|_| "не удалось получить метаданные")?;
+    
+    if metadata.len() < 100 {
+        return Err("файл слишком мал".to_string());
+    }
+    
+    let dyn_img = image::open(image_path)
+        .map_err(|e| format!("не удалось открыть: {}", e))?;
+    
+    let protocol = picker.new_resize_protocol(dyn_img);
+    
+    Ok(protocol)
 }
 
 fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
@@ -357,13 +366,11 @@ fn draw_error_screen(f: &mut Frame, app: &App) {
         ])
         .split(area);
     
-    // Заголовок
     let title = Paragraph::new("Ошибка")
         .block(Block::default().borders(Borders::ALL))
         .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
     f.render_widget(title, chunks[0]);
     
-    // Сообщение об ошибке
     let error_text = vec![
         Line::from(""),
         Line::from(app.error_message.clone()),
@@ -378,8 +385,7 @@ fn draw_error_screen(f: &mut Frame, app: &App) {
     
     f.render_widget(error_msg, chunks[1]);
     
-    // Статус
     let status = Paragraph::new("Любая клавиша: продолжить | q: выход")
         .style(Style::default().fg(Color::Gray));
     f.render_widget(status, chunks[2]);
-} 
+}

@@ -365,7 +365,7 @@ func (s *APIServer) getMessages(w http.ResponseWriter, r *http.Request) {
 			msgResponse.ImageID = &imageID
 
 			// Проверяем различные форматы изображений
-			possibleExtensions := []string{".png", ".jpg", ".jpeg", ".webp", ".gif"}
+			possibleExtensions := []string{".jpg", ".jpeg", ".png", ".webp", ".gif"}
 			for _, ext := range possibleExtensions {
 				imagePath := fmt.Sprintf("/tmp/vi-tg_image_%d%s", imageID, ext)
 				if _, err := os.Stat(imagePath); err == nil {
