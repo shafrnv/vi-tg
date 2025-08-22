@@ -177,29 +177,5 @@ impl ApiClient {
         }
     }
 
-    pub async fn get_sticker(&self, sticker_id: i64) -> Result<Vec<u8>> {
-        let url = format!("{}/api/stickers/{}", self.base_url, sticker_id);
-        let response = self.client.get(&url).send().await?;
-        
-        if response.status().is_success() {
-            let bytes = response.bytes().await?;
-            Ok(bytes.to_vec())
-        } else {
-            let error: ErrorResponse = response.json().await?;
-            Err(anyhow::anyhow!("API error: {}", error.error))
-        }
-    }
 
-    pub async fn get_image(&self, image_id: i64) -> Result<Vec<u8>> {
-        let url = format!("{}/api/images/{}", self.base_url, image_id);
-        let response = self.client.get(&url).send().await?;
-        
-        if response.status().is_success() {
-            let bytes = response.bytes().await?;
-            Ok(bytes.to_vec())
-        } else {
-            let error: ErrorResponse = response.json().await?;
-            Err(anyhow::anyhow!("API error: {}", error.error))
-        }
-    }
-} 
+}

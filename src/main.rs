@@ -1,9 +1,4 @@
 use anyhow::Result;
-
-
-use std::{
-    io::{Write}
-};
 use serde::{Deserialize, Serialize};
 
 mod api;
@@ -45,17 +40,6 @@ pub struct AuthStatus {
     pub needs_code: bool,
 }
 
-fn debug_log(message: &str) {
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/vi-tg-debug.log") 
-    {
-        let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
-        let log_message = format!("[{}] {}\n", timestamp, message);
-        let _ = file.write_all(log_message.as_bytes());
-    }
-}
 
 fn cleanup_corrupted_images() {
     let tmp_dir = "/tmp";
@@ -102,7 +86,7 @@ async fn main() -> Result<()> {
     
     let api_client = ApiClient::new("http://localhost:8080".to_string());
     
-    let mut app = App::new(api_client);
+    let app = App::new(api_client);
 
     run_tui(app).await?;
     
@@ -125,8 +109,23 @@ async fn run_tui(mut app: App) -> Result<()> {
             if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
                 match key.code {
                     crossterm::event::KeyCode::Char('q') => break,
-                    crossterm::event::KeyCode::Up => app.move_chat_selection(-1),
-                    crossterm::event::KeyCode::Down => app.move_chat_selection(1),
+                    crossterm::event::KeyCode::Tab => {
+                        app.toggle_focus();
+                    }
+                    crossterm::event::KeyCode::Up => {
+                        if app.focus_on_messages {
+                            app.move_message_selection(-1, app.calculate_visible_capacity());
+                        } else {
+                            app.move_chat_selection(-1);
+                        }
+                    }
+                    crossterm::event::KeyCode::Down => {
+                        if app.focus_on_messages {
+                            app.move_message_selection(1, app.calculate_visible_capacity());
+                        } else {
+                            app.move_chat_selection(1);
+                        }
+                    }
                     crossterm::event::KeyCode::Char('r') => {
                         if let Err(e) = app.refresh_data().await {
                             app.show_error(&format!("Ошибка обновления: {}", e));
@@ -140,8 +139,14 @@ async fn run_tui(mut app: App) -> Result<()> {
                     crossterm::event::KeyCode::Enter => {
                         match app.state {
                             AppState::Main => {
-                                if let Err(e) = app.select_chat().await {
-                                    app.show_error(&format!("Ошибка выбора чата: {}", e));
+                                if app.focus_on_messages {
+                                    app.open_selected_message();
+                                } else {
+                                    if let Err(e) = app.select_chat().await {
+                                        app.show_error(&format!("Ошибка выбора чата: {}", e));
+                                    }
+                                    // после выбора чата переводим фокус на сообщения
+                                    app.focus_messages();
                                 }
                             }
                             AppState::MessageInput => {
@@ -160,6 +165,9 @@ async fn run_tui(mut app: App) -> Result<()> {
                                     app.show_error(&format!("Ошибка отправки кода: {}", e));
                                 }
                             }
+                            AppState::ImagePreview => {
+                                app.close_image_preview();
+                            }
                             _ => {}
                         }
                     }
@@ -167,6 +175,11 @@ async fn run_tui(mut app: App) -> Result<()> {
                         if app.state == AppState::MessageInput {
                             app.state = AppState::Main;
                             app.message_input.clear();
+                        } else if app.state == AppState::Main {
+                            // Esc возвращает фокус на список чатов
+                            app.focus_chats();
+                        } else if app.state == AppState::ImagePreview {
+                            app.close_image_preview();
                         }
                     }
                     crossterm::event::KeyCode::Char(c) => {
@@ -199,10 +212,9 @@ async fn run_tui(mut app: App) -> Result<()> {
     // Восстановление терминала
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
-        terminal.backend_mut(),
+        std::io::stdout(),
         crossterm::terminal::LeaveAlternateScreen
     )?;
-    terminal.show_cursor()?;
 
     Ok(())
 }
@@ -219,7 +231,7 @@ fn is_valid_image_file(file_path: &str) -> bool {
                     return true;
                 }
             }
-            
+
             if header.len() >= 8 {
                 // PNG: начинается с 0x89 0x50 0x4E 0x47 0x0D 0x0A 0x1A 0x0A
                 if header[0] == 0x89 && header[1] == 0x50 && header[2] == 0x4E && header[3] == 0x47 &&
@@ -227,14 +239,14 @@ fn is_valid_image_file(file_path: &str) -> bool {
                     return true;
                 }
             }
-            
+
             if header.len() >= 4 {
                 // GIF: начинается с "GIF8"
                 if header[0] == 0x47 && header[1] == 0x49 && header[2] == 0x46 && header[3] == 0x38 {
                     return true;
                 }
             }
-            
+
             if header.len() >= 12 {
                 // WebP: начинается с "RIFF" и содержит "WEBP"
                 if header[0] == 0x52 && header[1] == 0x49 && header[2] == 0x46 && header[3] == 0x46 &&
