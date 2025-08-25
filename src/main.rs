@@ -34,6 +34,10 @@ pub struct Message {
     pub video_id: Option<i64>,
     pub video_path: Option<String>,
     pub video_preview_path: Option<String>,
+    pub video_is_round: Option<bool>,
+    pub voice_id: Option<i64>,
+    pub voice_path: Option<String>,
+    pub voice_duration: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,12 +56,12 @@ fn cleanup_corrupted_images() {
                 let path = entry.path();
                 if let Some(file_name) = path.file_name() {
                     if let Some(name_str) = file_name.to_str() {
-                        if name_str.starts_with("vi-tg_image_") {
+                        if name_str.starts_with("vi-tg_image_") || name_str.starts_with("vi-tg_sticker_") {
                             let path_str = path.to_str().unwrap();
-                            
+
                             // Проверяем файлы с различными расширениями изображений
-                            if name_str.ends_with(".png") || name_str.ends_with(".jpg") || 
-                               name_str.ends_with(".jpeg") || name_str.ends_with(".webp") || 
+                            if name_str.ends_with(".png") || name_str.ends_with(".jpg") ||
+                               name_str.ends_with(".jpeg") || name_str.ends_with(".webp") ||
                                name_str.ends_with(".gif") {
                                 // Простая проверка размера файла
                                 if let Ok(metadata) = std::fs::metadata(path_str) {
@@ -66,7 +70,7 @@ fn cleanup_corrupted_images() {
                                         continue;
                                     }
                                 }
-                                
+
                                 // Проверяем, что файл действительно является изображением
                                 if !is_valid_image_file(path_str) {
                                     let _ = std::fs::remove_file(&path);
@@ -127,6 +131,27 @@ async fn run_tui(mut app: App) -> Result<()> {
                             app.move_message_selection(1, app.calculate_visible_capacity());
                         } else {
                             app.move_chat_selection(1);
+                        }
+                    }
+                    crossterm::event::KeyCode::Char('h') => {
+                        if app.focus_on_messages && app.audio_player.is_playing {
+                            if !app.audio_player.seek(-2) { // Rewind 2 seconds
+                                // If IPC communication failed, restart player at new position
+                                app.restart_player_at_position();
+                            }
+                        }
+                    }
+                    crossterm::event::KeyCode::Char('k') => {
+                        if app.focus_on_messages && app.audio_player.is_playing {
+                            if !app.audio_player.seek(2) { // Fast forward 2 seconds
+                                // If IPC communication failed, restart player at new position
+                                app.restart_player_at_position();
+                            }
+                        }
+                    }
+                    crossterm::event::KeyCode::Char(' ') => {
+                        if app.focus_on_messages && app.audio_player.is_playing {
+                            app.audio_player.stop(); // Stop playback
                         }
                     }
                     crossterm::event::KeyCode::Char('r') => {

@@ -6,6 +6,7 @@ use ratatui::{
     Frame,
 };
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
+use std::collections::HashMap;
 
 use crate::app::{App, AppState};
 
@@ -197,30 +198,40 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     let message_height = 1; // базовая высота для сообщения
     let image_height = 12; // высота для изображения
+    let sticker_height = 8; // высота для стикера
+    let voice_height = 8; // увеличена высота для голосового сообщения с плеером
 
     let picker = match Picker::from_query_stdio() {
         Ok(p) => Some(p),
         Err(_) => None,
     };
 
-    // Умная логика прокрутки с учетом изображений
+    // Умная логика прокрутки с учетом изображений и стикеров
     let mut start_index = 0;
     if app.selected_message_index < app.messages.len() {
         let visible_height = inner_area.height as usize;
 
-        // Проверяем, является ли выбранное сообщение изображением или видео
+        // Проверяем, является ли выбранное сообщение изображением, видео, стикером или голосом
         let selected_msg = &app.messages[app.selected_message_index];
         let is_image_selected = app.focus_on_messages && selected_msg.r#type == "photo";
         let is_video_selected = app.focus_on_messages && selected_msg.r#type == "video";
+        let is_sticker_selected = app.focus_on_messages && selected_msg.r#type == "sticker";
+        let is_voice_selected = app.focus_on_messages && selected_msg.r#type == "voice";
 
         // Проверяем, находится ли изображение в последних 12 строках
         let last_message_index = app.messages.len().saturating_sub(1);
         let last_12_messages_start = last_message_index.saturating_sub(11); // 12 строк от конца
 
-        if (is_image_selected || is_video_selected) && app.selected_message_index >= last_12_messages_start {
-            // Для изображений и видео в последних 12 строках: прокручиваем на 11 строк вниз
+        if (is_image_selected || is_video_selected || is_sticker_selected || is_voice_selected) && app.selected_message_index >= last_12_messages_start {
+            // Разная прокрутка для разных типов медиа
             let base_start = app.messages.len().saturating_sub(visible_height);
-            start_index = base_start + 11; // Прокрутка на 11 строк
+            if is_voice_selected {
+                // Для голосовых сообщений: прокручиваем на 5 строк вниз
+                start_index = base_start + 4;
+            } else {
+                // Для изображений, видео и стикеров: прокручиваем на 11 строк вниз
+                start_index = base_start + 11;
+            }
             start_index = start_index.min(app.messages.len().saturating_sub(1));
         } else {
             // Для обычных сообщений или изображений не в последних 12 строках: обычная логика
@@ -256,6 +267,10 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
         let is_selected = app.focus_on_messages && index == app.selected_message_index;
         let current_height = if msg.r#type == "photo" || msg.r#type == "video" {
             if is_selected { image_height } else { message_height }
+        } else if msg.r#type == "sticker" {
+            if is_selected { sticker_height } else { message_height }
+        } else if msg.r#type == "voice" {
+            if is_selected { voice_height } else { message_height }
         } else { message_height };
 
         // Проверяем, что область сообщения не выходит за границы
@@ -273,16 +288,20 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
         match msg.r#type.as_str() {
             "sticker" => {
-                let sticker_text = if let Some(emoji) = &msg.sticker_emoji {
-                    format!("{} [стикер]", emoji)
+                if is_selected {
+                    draw_sticker_message(f, msg, message_area, time, picker.as_ref());
                 } else {
-                    "[стикер]".to_string()
-                };
-                let text_content = format!("{} {}: {}", time, msg.from, sticker_text);
-                let text_widget = Paragraph::new(text_content)
-                    .style(Style::default().fg(Color::Magenta))
-                    .wrap(Wrap { trim: true });
-                f.render_widget(text_widget, message_area);
+                    let sticker_text = if let Some(emoji) = &msg.sticker_emoji {
+                        format!("{} [стикер — Enter: открыть]", emoji)
+                    } else {
+                        "[🏷️ Стикер — Enter: открыть]".to_string()
+                    };
+                    let text_content = format!("{} {}: {}", time, msg.from, sticker_text);
+                    let text_widget = Paragraph::new(text_content)
+                        .style(Style::default().fg(Color::Magenta))
+                        .wrap(Wrap { trim: true });
+                    f.render_widget(text_widget, message_area);
+                }
             }
             "photo" => {
                 if is_selected {
@@ -300,10 +319,35 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
                 if is_selected {
                     draw_video_message(f, msg, message_area, time, picker.as_ref());
                 } else {
-                    let label = "[🎬 Видео — Enter: открыть]";
+                    let (label, color) = if let Some(is_round) = msg.video_is_round {
+                        if is_round {
+                            ("[🔮 Круглое видео — Enter: открыть]", Color::Magenta)
+                        } else {
+                            ("[🎬 Видео — Enter: открыть]", Color::Green)
+                        }
+                    } else {
+                        ("[🎬 Видео — Enter: открыть]", Color::Green)
+                    };
                     let text_content = format!("{} {}: {}", time, msg.from, label);
                     let text_widget = Paragraph::new(text_content)
-                        .style(Style::default().fg(Color::Green))
+                        .style(Style::default().fg(color))
+                        .wrap(Wrap { trim: true });
+                    f.render_widget(text_widget, message_area);
+                }
+            }
+            "voice" => {
+                if is_selected {
+                    draw_voice_message(f, msg, message_area, time, &app.audio_player);
+                } else {
+                    let duration_text = if let Some(duration) = msg.voice_duration {
+                        format!("{} сек", duration)
+                    } else {
+                        "неизвестно".to_string()
+                    };
+                    let label = format!("[🎤 Голосовое — {}]", duration_text);
+                    let text_content = format!("{} {}: {}", time, msg.from, label);
+                    let text_widget = Paragraph::new(text_content)
+                        .style(Style::default().fg(Color::Red))
                         .wrap(Wrap { trim: true });
                     f.render_widget(text_widget, message_area);
                 }
@@ -409,11 +453,25 @@ fn draw_photo_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
 }
 
 fn try_display_image(image_path: &str, picker: &Picker, _area: Rect) -> Result<StatefulProtocol, String> {
-    if !std::path::Path::new(image_path).exists() {
-        return Err(format!("файл не найден: {}", image_path));
-    }
+    let actual_path = if std::path::Path::new(image_path).exists() {
+        image_path.to_string()
+    } else {
+        // If the exact path doesn't exist, try alternative extensions for stickers
+        if image_path.contains("sticker") {
+            let base_path = image_path.trim_end_matches(".png").trim_end_matches(".webp");
+            let alternative_extensions = [".webp", ".png"];
 
-    let metadata = std::fs::metadata(image_path)
+            for ext in &alternative_extensions {
+                let alt_path = format!("{}{}", base_path, ext);
+                if std::path::Path::new(&alt_path).exists() {
+                    return try_display_image(&alt_path, picker, _area);
+                }
+            }
+        }
+        return Err(format!("файл не найден: {}", image_path));
+    };
+
+    let metadata = std::fs::metadata(&actual_path)
         .map_err(|e| format!("не удалось получить метаданные: {}", e))?;
 
     if metadata.len() < 100 {
@@ -421,11 +479,15 @@ fn try_display_image(image_path: &str, picker: &Picker, _area: Rect) -> Result<S
     }
 
     // Проверяем, что файл не пустой и читаемый
-    let file = std::fs::File::open(image_path)
+    let file = std::fs::File::open(&actual_path)
         .map_err(|e| format!("не удалось открыть файл: {}", e))?;
 
-    let dyn_img = image::open(image_path)
-        .map_err(|e| format!("не удалось открыть изображение: {} (путь: {})", e, image_path))?;
+    let dyn_img = image::open(&actual_path)
+        .map_err(|e| {
+            // Не удаляем файл автоматически при ошибке декодирования
+            // Даем пользователю возможность попробовать перезагрузить чат
+            format!("не удалось открыть изображение: {} (путь: {})", e, actual_path)
+        })?;
 
     let protocol = picker.new_resize_protocol(dyn_img);
 
@@ -543,40 +605,65 @@ fn draw_image_preview(f: &mut Frame, app: &App) {
 }
 
 fn try_display_image_full(image_path: &str, picker: &Picker) -> Result<StatefulProtocol, String> {
-    if !std::path::Path::new(image_path).exists() {
+    let actual_path = if std::path::Path::new(image_path).exists() {
+        image_path.to_string()
+    } else {
+        // If the exact path doesn't exist, try alternative extensions for stickers
+        if image_path.contains("sticker") {
+            let base_path = image_path.trim_end_matches(".png").trim_end_matches(".webp");
+            let alternative_extensions = [".webp", ".png"];
+
+            for ext in &alternative_extensions {
+                let alt_path = format!("{}{}", base_path, ext);
+                if std::path::Path::new(&alt_path).exists() {
+                    return try_display_image_full(&alt_path, picker);
+                }
+            }
+        }
+        return Err(format!("файл не найден: {}", image_path));
+    };
+
+    let actual_path = &actual_path;
+    if !std::path::Path::new(actual_path).exists() {
         return Err(format!("файл не найден: {}", image_path));
     }
 
     // Проверяем размер файла
-    let metadata = std::fs::metadata(image_path)
+    let metadata = std::fs::metadata(&actual_path)
         .map_err(|e| format!("не удалось получить метаданные: {}", e))?;
 
     if metadata.len() < 100 {
-        return Err(format!("файл слишком мал: {} байт (путь: {})", metadata.len(), image_path));
+        return Err(format!("файл слишком мал: {} байт (путь: {})", metadata.len(), actual_path));
     }
 
     // Проверяем, что файл читаем
-    let _file = std::fs::File::open(image_path)
-        .map_err(|e| format!("не удалось открыть файл: {} (путь: {})", e, image_path))?;
+    let _file = std::fs::File::open(&actual_path)
+        .map_err(|e| format!("не удалось открыть файл: {} (путь: {})", e, actual_path))?;
 
     // Пытаемся определить формат по первым байтам
-    if let Ok(header) = std::fs::read(image_path) {
+    if let Ok(header) = std::fs::read(&actual_path) {
         if header.is_empty() || header.len() < 4 {
-            return Err(format!("файл пустой или слишком мал для определения формата (путь: {})", image_path));
+            return Err(format!("файл пустой или слишком мал для определения формата (путь: {})", actual_path));
         }
 
         // Проверяем магические байты различных форматов
         let is_jpeg = header.len() >= 2 && header[0] == 0xFF && header[1] == 0xD8;
         let is_png = header.len() >= 8 && header[0] == 0x89 && header[1] == 0x50 && header[2] == 0x4E && header[3] == 0x47;
         let is_gif = header.len() >= 4 && header[0] == 0x47 && header[1] == 0x49 && header[2] == 0x46 && header[3] == 0x38;
+        let is_webp = header.len() >= 12 && header[0] == 0x52 && header[1] == 0x49 && header[2] == 0x46 && header[3] == 0x46 &&
+                      header[8] == 0x57 && header[9] == 0x45 && header[10] == 0x42 && header[11] == 0x50;
 
-        if !is_jpeg && !is_png && !is_gif {
-            return Err(format!("неподдерживаемый формат файла (путь: {}). Поддерживаемые: JPEG, PNG, GIF", image_path));
+        if !is_jpeg && !is_png && !is_gif && !is_webp {
+            return Err(format!("неподдерживаемый формат файла (путь: {}). Поддерживаемые: JPEG, PNG, GIF, WebP", actual_path));
         }
     }
 
-    let dyn_img = image::open(image_path)
-        .map_err(|e| format!("не удалось открыть изображение: {} (путь: {})", e, image_path))?;
+    let dyn_img = image::open(&actual_path)
+        .map_err(|e| {
+            // Не удаляем файл автоматически при ошибке декодирования
+            // Даем пользователю возможность попробовать перезагрузить чат
+            format!("не удалось открыть изображение: {} (путь: {})", e, actual_path)
+        })?;
 
     Ok(picker.new_resize_protocol(dyn_img))
 }
@@ -649,6 +736,108 @@ fn draw_video_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
     f.render_widget(message_block, area);
 }
 
+fn draw_sticker_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, picker: Option<&Picker>) {
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    // Проверяем, достаточно ли места для отображения текста сверху
+    let has_space_for_text = inner_area.height > 1;
+
+    let _text_area = if has_space_for_text {
+        // Метаданные сверху
+        let text_rect = Rect {
+            x: inner_area.x,
+            y: inner_area.y,
+            width: inner_area.width,
+            height: 1,
+        };
+
+        let text_content = format!("{} {}:", time, msg.from);
+        let text_widget = Paragraph::new(text_content)
+            .style(Style::default().fg(Color::Yellow));
+        f.render_widget(text_widget, text_rect);
+
+        text_rect
+    } else {
+        // Если нет места для текста, возвращаем пустую область
+        Rect::default()
+    };
+
+    // Стикер снизу от метаданных
+    let sticker_area = Rect {
+        x: inner_area.x,
+        y: if has_space_for_text { inner_area.y + 1 } else { inner_area.y },
+        width: inner_area.width,
+        height: if has_space_for_text { inner_area.height.saturating_sub(1) } else { inner_area.height },
+    };
+
+    if let Some(sticker_path) = &msg.sticker_path {
+        // Check if the file exists at the given path or with alternative extensions
+        let mut file_exists = false;
+        let mut actual_path = sticker_path.clone();
+
+        // Check exact path first
+        if std::path::Path::new(sticker_path).exists() {
+            file_exists = true;
+        } else if sticker_path.contains("sticker") {
+            // Try alternative extensions
+            let base_path = sticker_path.trim_end_matches(".png").trim_end_matches(".webp");
+            let alternative_extensions = [".webp", ".png"];
+
+            for ext in &alternative_extensions {
+                let alt_path = format!("{}{}", base_path, ext);
+                if std::path::Path::new(&alt_path).exists() {
+                    file_exists = true;
+                    actual_path = alt_path.clone();
+                    break;
+                }
+            }
+        }
+
+        if file_exists {
+            if let Some(picker) = picker {
+                match try_display_image(&actual_path, picker, sticker_area) {
+                    Ok(mut protocol) => {
+                        let image_widget = StatefulImage::new();
+                        f.render_stateful_widget(image_widget, sticker_area, &mut protocol);
+                    }
+                    Err(e) => {
+                        let error_text = format!("[🏷️ Ошибка стикера: {}]", e);
+                        let error_widget = Paragraph::new(error_text)
+                            .style(Style::default().fg(Color::Red));
+                        f.render_widget(error_widget, sticker_area);
+                    }
+                }
+            } else {
+                let placeholder = Paragraph::new("[🏷️ Терминал не поддерживает изображения]")
+                    .style(Style::default().fg(Color::Yellow));
+                f.render_widget(placeholder, sticker_area);
+            }
+        } else {
+            // File doesn't exist, show a more helpful message
+            let helpful_message = if sticker_path.contains("sticker") {
+                format!("[🏷️ Стикер не найден. Попробуйте обновить чат для повторной загрузки.]")
+            } else {
+                format!("[🏷️ Стикер не найден: {}]", sticker_path)
+            };
+            let error_widget = Paragraph::new(helpful_message)
+                .style(Style::default().fg(Color::Yellow));
+            f.render_widget(error_widget, sticker_area);
+        }
+    } else {
+        let placeholder = Paragraph::new("[🏷️ Загрузка стикера...]")
+            .style(Style::default().fg(Color::Blue));
+        f.render_widget(placeholder, sticker_area);
+    }
+
+    let message_block = Block::default();
+    f.render_widget(message_block, area);
+}
+
 fn draw_video_preview(f: &mut Frame, app: &App) {
     let area = f.area();
 
@@ -687,4 +876,95 @@ fn draw_video_preview(f: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::ALL).title("Превью видео"));
     let hint_area = Rect { x: area.x + 2, y: area.y + area.height.saturating_sub(3), width: area.width.saturating_sub(4), height: 3 };
     f.render_widget(hint, hint_area);
+}
+
+fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer) {
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    // Проверяем, достаточно ли места для отображения текста сверху
+    let has_space_for_text = inner_area.height > 1;
+
+    let _text_area = if has_space_for_text {
+        // Метаданные сверху
+        let text_rect = Rect {
+            x: inner_area.x,
+            y: inner_area.y,
+            width: inner_area.width,
+            height: 1,
+        };
+
+        let text_content = format!("{} {}:", time, msg.from);
+        let text_widget = Paragraph::new(text_content)
+            .style(Style::default().fg(Color::Yellow));
+        f.render_widget(text_widget, text_rect);
+
+        text_rect
+    } else {
+        // Если нет места для текста, возвращаем пустую область
+        Rect::default()
+    };
+
+    // Область для голосового сообщения
+    let voice_area = Rect {
+        x: inner_area.x,
+        y: if has_space_for_text { inner_area.y + 1 } else { inner_area.y },
+        width: inner_area.width,
+        height: if has_space_for_text { inner_area.height.saturating_sub(1) } else { inner_area.height },
+    };
+
+    // Создаем визуализацию голосового сообщения
+    let duration_text = if let Some(duration) = msg.voice_duration {
+        format!("{} сек", duration)
+    } else {
+        "неизвестно".to_string()
+    };
+
+    // Проверяем, является ли это текущее проигрываемое сообщение
+    let is_current = audio_player.is_current_message(msg.id);
+
+    // Создаем улучшенную волновую форму
+    let wave_chars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    let mut wave_display = String::new();
+
+    // Создаем волновую форму в зависимости от длительности
+    if let Some(duration) = msg.voice_duration {
+        let wave_length = (voice_area.width as usize).min(40); // Увеличиваем до 40 символов для лучшей визуализации
+        for i in 0..wave_length {
+            // Создаем более реалистичную волновую форму с вариациями
+            let base_wave = (i * duration as usize / wave_length) % wave_chars.len();
+            let variation = (i * 7 + duration as usize) % 3; // Добавляем вариации для более реалистичного вида
+            let wave_index = (base_wave + variation).min(wave_chars.len() - 1);
+            wave_display.push_str(wave_chars[wave_index]);
+        }
+    } else {
+        // Если длительность неизвестна, показываем статичную волну
+        wave_display = "▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂".to_string();
+    }
+
+    // Создаем более компактный дизайн с элементами управления
+    let mut voice_lines = vec![
+        Line::from(format!("🎤 {} сек", duration_text)).style(Style::default().fg(Color::Red)),
+        Line::from(wave_display).style(Style::default().fg(Color::Cyan)),
+    ];
+
+    // Добавляем строку с временем и элементами управления
+    if is_current {
+        let time_display = audio_player.get_current_time_display();
+        let play_pause = if audio_player.is_playing { "⏸" } else { "▶" };
+        let controls_line = format!("{} | {} | h: -2s | k: +2s | Esc: ✗", time_display, play_pause);
+        voice_lines.push(Line::from(controls_line).style(Style::default().fg(Color::Green)));
+    } else {
+        voice_lines.push(Line::from("Enter: ▶  Esc: ✗").style(Style::default().fg(Color::Gray)));
+    }
+
+    let voice_widget = Paragraph::new(voice_lines)
+        .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(voice_widget, voice_area);
 }

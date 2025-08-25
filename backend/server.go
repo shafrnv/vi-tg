@@ -87,6 +87,10 @@ type MessageResponse struct {
 	VideoID          *int64  `json:"video_id"`
 	VideoPath        *string `json:"video_path"`
 	VideoPreviewPath *string `json:"video_preview_path"`
+	VideoIsRound     *bool   `json:"video_is_round"`
+	VoiceID          *int64  `json:"voice_id"`
+	VoicePath        *string `json:"voice_path"`
+	VoiceDuration    *int    `json:"voice_duration"`
 }
 
 type MessagesResponse struct {
@@ -142,6 +146,9 @@ func (s *APIServer) Start() error {
 
 	// Video endpoints
 	api.HandleFunc("/videos/{video_id}", s.getVideo).Methods("GET")
+
+	// Voice endpoints
+	api.HandleFunc("/voices/{voice_id}", s.getVoice).Methods("GET")
 
 	// Health check
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -406,6 +413,31 @@ func (s *APIServer) getMessages(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 			}
+
+			// Проверяем, является ли видео круглым
+			msgResponse.VideoIsRound = &msg.VideoIsRound
+		}
+
+		// Add support for voice paths
+		if msg.Type == "voice" {
+			voiceID := int64(msg.ID)
+			// Всегда устанавливаем VoiceID для голосовых сообщений
+			msgResponse.VoiceID = &voiceID
+
+			// Проверяем различные форматы голосовых файлов
+			voiceExtensions := []string{".ogg", ".oga", ".mp3", ".wav", ".m4a", ".aac"}
+			for _, ext := range voiceExtensions {
+				voicePath := fmt.Sprintf("/tmp/vi-tg_voice_%d%s", voiceID, ext)
+				if _, err := os.Stat(voicePath); err == nil {
+					msgResponse.VoicePath = &voicePath
+					break
+				}
+			}
+
+			// Устанавливаем длительность голосового сообщения
+			if msg.VoiceDuration > 0 {
+				msgResponse.VoiceDuration = &msg.VoiceDuration
+			}
 		}
 
 		messageResponses = append(messageResponses, msgResponse)
@@ -605,6 +637,64 @@ func (s *APIServer) getVideo(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(videoPath)
 	if err != nil {
 		s.sendError(w, "Ошибка чтения файла видео", http.StatusInternalServerError)
+		return
+	}
+
+	// Устанавливаем заголовки
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+
+	// Отправляем данные
+	w.Write(data)
+}
+
+func (s *APIServer) getVoice(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	voiceIDStr := vars["voice_id"]
+	voiceID, err := strconv.ParseInt(voiceIDStr, 10, 64)
+	if err != nil {
+		s.sendError(w, "Неверный ID голосового сообщения", http.StatusBadRequest)
+		return
+	}
+
+	// Ищем файл голосового сообщения с различными расширениями
+	voiceExtensions := []string{".ogg", ".oga", ".mp3", ".wav", ".m4a", ".aac"}
+	var voicePath string
+	var contentType string
+
+	for _, ext := range voiceExtensions {
+		testPath := fmt.Sprintf("/tmp/vi-tg_voice_%d%s", voiceID, ext)
+		if _, err := os.Stat(testPath); err == nil {
+			voicePath = testPath
+			// Определяем MIME тип на основе расширения
+			switch ext {
+			case ".ogg", ".oga":
+				contentType = "audio/ogg"
+			case ".mp3":
+				contentType = "audio/mpeg"
+			case ".wav":
+				contentType = "audio/wav"
+			case ".m4a":
+				contentType = "audio/mp4"
+			case ".aac":
+				contentType = "audio/aac"
+			default:
+				contentType = "audio/ogg"
+			}
+			break
+		}
+	}
+
+	if voicePath == "" {
+		s.sendError(w, "Голосовое сообщение не найдено", http.StatusNotFound)
+		return
+	}
+
+	// Читаем файл
+	data, err := os.ReadFile(voicePath)
+	if err != nil {
+		s.sendError(w, "Ошибка чтения файла голосового сообщения", http.StatusInternalServerError)
 		return
 	}
 

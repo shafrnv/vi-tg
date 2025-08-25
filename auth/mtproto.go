@@ -50,13 +50,17 @@ type Message struct {
 	From             string
 	Timestamp        time.Time
 	ChatID           int64
-	Type             string // "text", "sticker", "photo", "video", etc.
+	Type             string // "text", "sticker", "photo", "video", "voice", etc.
 	StickerID        int64  // ID стикера если Type == "sticker"
 	StickerEmoji     string // Эмодзи стикера
 	StickerPath      string // Путь к файлу стикера (если скачан)
 	ImagePath        string // Путь к файлу изображения (если скачан)
 	VideoPath        string // Путь к файлу видео (если скачан)
 	VideoPreviewPath string // Путь к превью видео (если сгенерировано)
+	VideoIsRound     bool   // Флаг для круглого видео
+	VoiceID          int64  // ID голосового сообщения если Type == "voice"
+	VoicePath        string // Путь к файлу голосового сообщения (если скачан)
+	VoiceDuration    int    // Длительность голосового сообщения в секундах
 }
 
 // --- Кастомный UserAuthenticator для авторизации ---
@@ -477,6 +481,10 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 	imagePath := ""
 	videoPath := ""
 	videoPreviewPath := ""
+	videoIsRound := false
+	voiceID := int64(0)
+	voicePath := ""
+	voiceDuration := 0
 
 	debugLog("Обрабатываем сообщение %d, медиа: %v", message.ID, message.Media != nil)
 
@@ -487,18 +495,29 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 			if media.Document != nil {
 				if doc, ok := media.Document.(*tg.Document); ok {
 					isVideo := false
+					isVoice := false
 					for _, attr := range doc.Attributes {
 						if stickerAttr, ok := attr.(*tg.DocumentAttributeSticker); ok {
 							msgType = "sticker"
 							stickerID = doc.ID
 							stickerEmoji = stickerAttr.Alt
+							debugLog("Начинаем скачивание стикера для сообщения %d, Document ID: %d", message.ID, doc.ID)
 							stickerPath = downloadStickerFile(m.api, doc)
-							debugLog("Сообщение %d содержит стикер: %s", message.ID, stickerEmoji)
+							if stickerPath == "" {
+								debugLog("Не удалось скачать стикер для сообщения %d", message.ID)
+							} else {
+								debugLog("Стикер для сообщения %d скачан: %s", message.ID, stickerPath)
+							}
 							break
 						}
-						if _, ok := attr.(*tg.DocumentAttributeVideo); ok {
+						if videoAttr, ok := attr.(*tg.DocumentAttributeVideo); ok {
 							isVideo = true
 							msgType = "video"
+							// Проверяем, является ли видео круглым
+							if videoAttr.RoundMessage {
+								videoIsRound = true
+								debugLog("Видео для сообщения %d является круглым", message.ID)
+							}
 							videoPath = downloadVideoFile(m.api, doc, message.ID)
 							if videoPath == "" {
 								debugLog("Не удалось скачать видео для сообщения %d", message.ID)
@@ -509,8 +528,24 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 							}
 							break
 						}
+						if audioAttr, ok := attr.(*tg.DocumentAttributeAudio); ok {
+							if audioAttr.Voice {
+								isVoice = true
+								msgType = "voice"
+								voiceID = doc.ID
+								voiceDuration = int(audioAttr.Duration)
+								debugLog("Начинаем скачивание голосового сообщения для сообщения %d, Document ID: %d", message.ID, doc.ID)
+								voicePath = downloadVoiceFile(m.api, doc, message.ID)
+								if voicePath == "" {
+									debugLog("Не удалось скачать голосовое сообщение для сообщения %d", message.ID)
+								} else {
+									debugLog("Голосовое сообщение для сообщения %d скачано: %s", message.ID, voicePath)
+								}
+								break
+							}
+						}
 					}
-					if !isVideo && msgType != "sticker" {
+					if !isVideo && !isVoice && msgType != "sticker" {
 						debugLog("Сообщение %d содержит документ неизвестного типа", message.ID)
 					}
 				}
@@ -546,6 +581,10 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 		ImagePath:        imagePath,
 		VideoPath:        videoPath,
 		VideoPreviewPath: videoPreviewPath,
+		VideoIsRound:     videoIsRound,
+		VoiceID:          voiceID,
+		VoicePath:        voicePath,
+		VoiceDuration:    voiceDuration,
 	}
 }
 
@@ -699,27 +738,36 @@ func getSessionPath() string {
 // downloadStickerFile скачивает файл стикера и возвращает путь к нему
 func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 	if api == nil || doc == nil {
+		debugLog("API или документ nil для стикера")
 		return ""
 	}
 
-	// Определяем расширение
-	ext := ".webp"
-	for _, attr := range doc.Attributes {
-		if _, ok := attr.(*tg.DocumentAttributeImageSize); ok {
-			ext = ".png"
+	// Проверяем, не скачан ли уже файл с любым расширением
+	possibleExtensions := []string{".webp", ".png", ".jpg", ".jpeg"}
+	for _, ext := range possibleExtensions {
+		existingFileName := fmt.Sprintf("/tmp/vi-tg_sticker_%d%s", doc.ID, ext)
+		if info, err := os.Stat(existingFileName); err == nil && info.Size() > 0 {
+			debugLog("Стикер уже существует: %s", existingFileName)
+			return existingFileName
 		}
 	}
 
-	// Путь для сохранения
-	fileName := fmt.Sprintf("/tmp/vi-tg_sticker_%d%s", doc.ID, ext)
-
-	// Проверяем, не скачан ли уже файл
-	if info, err := os.Stat(fileName); err == nil && info.Size() > 0 {
-		return fileName
+	// Определяем предпочтительное расширение на основе атрибутов
+	// Стикеры обычно приходят в формате WebP
+	preferredExt := ".webp"
+	for _, attr := range doc.Attributes {
+		if _, ok := attr.(*tg.DocumentAttributeImageSize); ok {
+			// Если есть атрибут размера изображения, может быть PNG, но проверим позже
+			preferredExt = ".png"
+			break
+		}
 	}
 
-	// Создаем файл
-	f, err := os.Create(fileName)
+	// Временный файл для скачивания
+	tempFileName := fmt.Sprintf("/tmp/vi-tg_sticker_%d_temp", doc.ID)
+
+	// Создаем временный файл
+	f, err := os.Create(tempFileName)
 	if err != nil {
 		return ""
 	}
@@ -744,7 +792,7 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 		})
 		if err != nil {
 			// Если файл не скачивается, возвращаем пустую строку
-			os.Remove(fileName) // Удаляем пустой файл
+			os.Remove(tempFileName) // Удаляем временный файл
 			return ""
 		}
 
@@ -759,7 +807,7 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 			} else {
 				// Записываем чанк в файл
 				if _, err := f.Write(data.Bytes); err != nil {
-					os.Remove(fileName)
+					os.Remove(tempFileName)
 					return ""
 				}
 				offset += int64(len(data.Bytes))
@@ -778,7 +826,7 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 				Limit:     chunkSize,
 			})
 			if err != nil {
-				os.Remove(fileName)
+				os.Remove(tempFileName)
 				return ""
 			}
 
@@ -789,7 +837,7 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 				} else {
 					// Записываем чанк в файл
 					if _, err := f.Write(cdnData.Bytes); err != nil {
-						os.Remove(fileName)
+						os.Remove(tempFileName)
 						return ""
 					}
 					offset += int64(len(cdnData.Bytes))
@@ -801,11 +849,11 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 					}
 				}
 			default:
-				os.Remove(fileName)
+				os.Remove(tempFileName)
 				return ""
 			}
 		default:
-			os.Remove(fileName)
+			os.Remove(tempFileName)
 			return ""
 		}
 
@@ -814,12 +862,34 @@ func downloadStickerFile(api *tg.Client, doc *tg.Document) string {
 		}
 	}
 
-	if info, err := os.Stat(fileName); err != nil || info.Size() == 0 {
-		os.Remove(fileName)
+	// Проверяем, что временный файл не пустой
+	if info, err := os.Stat(tempFileName); err != nil || info.Size() == 0 {
+		os.Remove(tempFileName)
 		return ""
 	}
 
-	return fileName
+	// Определяем реальный формат файла по его содержимому
+	detectedExt := detectImageFormat(tempFileName)
+	if detectedExt == "" {
+		// Если формат не определен, используем предпочтительное расширение
+		detectedExt = preferredExt
+		debugLog("Формат не определен, используем предпочтительное расширение: %s", detectedExt)
+	} else {
+		debugLog("Определен формат стикера: %s", detectedExt)
+	}
+
+	// Финальный файл с правильным расширением
+	finalFileName := fmt.Sprintf("/tmp/vi-tg_sticker_%d%s", doc.ID, detectedExt)
+
+	// Переименовываем файл с правильным расширением
+	if err := os.Rename(tempFileName, finalFileName); err != nil {
+		debugLog("Ошибка переименования файла %s в %s: %v", tempFileName, finalFileName, err)
+		os.Remove(tempFileName)
+		return ""
+	}
+
+	debugLog("Стикер успешно скачан и сохранен как: %s", finalFileName)
+	return finalFileName
 }
 
 // downloadPhotoFile скачивает фото и сохраняет как PNG
@@ -1395,4 +1465,165 @@ func generateVideoPreview(videoPath string, messageID int) string {
 	}
 
 	return previewPath
+}
+
+// downloadVoiceFile скачивает голосовой файл
+func downloadVoiceFile(api *tg.Client, doc *tg.Document, messageID int) string {
+	if api == nil || doc == nil {
+		debugLog("API или документ nil для голосового сообщения %d", messageID)
+		return ""
+	}
+
+	debugLog("Начинаем скачивание голосового сообщения для сообщения %d, Document ID: %d", messageID, doc.ID)
+
+	// Определяем расширение на основе MIME типа или атрибутов
+	ext := ".ogg" // Голосовые сообщения обычно в формате OGG
+	for _, attr := range doc.Attributes {
+		if filename, ok := attr.(*tg.DocumentAttributeFilename); ok {
+			// Извлекаем расширение из имени файла
+			if strings.Contains(filename.FileName, ".") {
+				fileExt := filepath.Ext(filename.FileName)
+				if fileExt != "" {
+					ext = fileExt
+				}
+			}
+		}
+	}
+
+	// Проверяем, не скачан ли уже файл
+	possibleExtensions := []string{".ogg", ".oga", ".mp3", ".wav", ".m4a", ".aac"}
+	for _, testExt := range possibleExtensions {
+		existingPath := fmt.Sprintf("/tmp/vi-tg_voice_%d%s", messageID, testExt)
+		if _, err := os.Stat(existingPath); err == nil {
+			debugLog("Голосовой файл уже существует: %s", existingPath)
+			return existingPath
+		}
+	}
+
+	// Путь для сохранения
+	fileName := fmt.Sprintf("/tmp/vi-tg_voice_%d%s", messageID, ext)
+	debugLog("Сохраняем голосовой файл как: %s", fileName)
+
+	// Создаем файл
+	f, err := os.Create(fileName)
+	if err != nil {
+		debugLog("Ошибка создания файла %s: %v", fileName, err)
+		return ""
+	}
+	defer f.Close()
+
+	// Скачиваем файл по частям
+	offset := int64(0)
+	chunkSize := int(512 * 1024) // 512KB чанки для голосовых файлов
+	totalBytes := int64(0)
+	finished := false
+	chunkCount := 0
+
+	debugLog("Начинаем скачивание голосового файла по частям")
+
+	for !finished {
+		chunkCount++
+		debugLog("Скачиваем чанк %d, offset: %d", chunkCount, offset)
+
+		resp, err := api.UploadGetFile(context.Background(), &tg.UploadGetFileRequest{
+			Precise:      true,
+			CDNSupported: false, // Отключаем CDN поддержку
+			Location: &tg.InputDocumentFileLocation{
+				ID:            doc.ID,
+				AccessHash:    doc.AccessHash,
+				FileReference: doc.FileReference,
+			},
+			Offset: offset,
+			Limit:  chunkSize,
+		})
+
+		if err != nil {
+			debugLog("Ошибка скачивания голосового файла для сообщения %d: %v", messageID, err)
+			os.Remove(fileName)
+			return ""
+		}
+
+		// Обработка ответа
+		switch file := resp.(type) {
+		case *tg.UploadFile:
+			if len(file.Bytes) == 0 {
+				// Файл скачан полностью
+				debugLog("Получен пустой чанк, голосовой файл скачан полностью")
+				finished = true
+			} else {
+				// Записываем чанк в файл
+				if _, err := f.Write(file.Bytes); err != nil {
+					debugLog("Ошибка записи чанка в голосовой файл: %v", err)
+					os.Remove(fileName)
+					return ""
+				}
+				offset += int64(len(file.Bytes))
+				totalBytes += int64(len(file.Bytes))
+				debugLog("Записан чанк %d, размер: %d байт, общий размер: %d байт", chunkCount, len(file.Bytes), totalBytes)
+
+				// Если получили меньше данных чем запросили, значит файл закончился
+				if len(file.Bytes) < chunkSize {
+					debugLog("Получен последний чанк, голосовой файл закончен")
+					finished = true
+				}
+			}
+		case *tg.UploadFileCDNRedirect:
+			debugLog("Получен CDN редирект для голосового файла")
+			// Скачиваем файл через CDN
+			cdnResp, err := api.UploadGetCDNFile(context.Background(), &tg.UploadGetCDNFileRequest{
+				FileToken: file.FileToken,
+				Offset:    offset,
+				Limit:     chunkSize,
+			})
+			if err != nil {
+				debugLog("Ошибка скачивания голосового файла через CDN: %v", err)
+				os.Remove(fileName)
+				return ""
+			}
+
+			switch cdnData := cdnResp.(type) {
+			case *tg.UploadCDNFile:
+				if len(cdnData.Bytes) == 0 {
+					debugLog("Получен пустой CDN чанк, голосовой файл скачан полностью")
+					finished = true
+				} else {
+					// Записываем чанк в файл
+					if _, err := f.Write(cdnData.Bytes); err != nil {
+						debugLog("Ошибка записи CDN чанка в голосовой файл: %v", err)
+						os.Remove(fileName)
+						return ""
+					}
+					offset += int64(len(cdnData.Bytes))
+					totalBytes += int64(len(cdnData.Bytes))
+					debugLog("Записан CDN чанк %d, размер: %d байт, общий размер: %d байт", chunkCount, len(cdnData.Bytes), totalBytes)
+
+					// Если получили меньше данных чем запросили, значит файл закончился
+					if len(cdnData.Bytes) < chunkSize {
+						debugLog("Получен последний CDN чанк, голосовой файл закончен")
+						finished = true
+					}
+				}
+			default:
+				debugLog("Неожиданный тип CDN ответа: %T", cdnResp)
+				os.Remove(fileName)
+				return ""
+			}
+		default:
+			debugLog("Неожиданный тип ответа: %T", resp)
+			os.Remove(fileName)
+			return ""
+		}
+	}
+
+	debugLog("Скачивание голосового файла завершено, общий размер: %d байт", totalBytes)
+
+	// Проверяем, что файл не пустой
+	if info, err := os.Stat(fileName); err != nil || info.Size() == 0 {
+		debugLog("Голосовой файл пустой или не существует: %v", err)
+		os.Remove(fileName)
+		return ""
+	}
+
+	debugLog("Голосовой файл успешно сохранен как %s", fileName)
+	return fileName
 }
