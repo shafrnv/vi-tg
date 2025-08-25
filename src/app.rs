@@ -14,6 +14,7 @@ pub enum AppState {
     MessageInput,
     Error,
     ImagePreview,
+    VideoPreview,
 }
 
 pub struct App {
@@ -40,6 +41,9 @@ pub struct App {
 
     // Просмотр изображения
     pub preview_image_path: Option<String>,
+
+    // Просмотр видео
+    pub preview_video_path: Option<String>,
 
     // Состояние ошибки
     pub error_message: String,
@@ -76,6 +80,7 @@ impl App {
             last_loaded_chat_id: None,
             //
             preview_image_path: None,
+            preview_video_path: None,
             error_message: String::new(),
             image_paths: HashMap::new(),
             last_update: Instant::now(),
@@ -382,13 +387,52 @@ impl App {
                     self.preview_image_path = Some(path.clone());
                     self.state = AppState::ImagePreview;
                 }
+            } else if msg.r#type == "video" {
+                // For video preview, use the preview image (JPEG) and show overlay
+                if let Some(preview_path) = &msg.video_preview_path {
+                    self.preview_image_path = Some(preview_path.clone());
+                    // Store video path for later playback when Enter is pressed in ImagePreview
+                    self.preview_video_path = Some(msg.video_path.clone().unwrap_or_default());
+                    self.state = AppState::ImagePreview;
+                } else if let Some(video_path) = &msg.video_path {
+                    // Fallback to video file if no preview is available
+                    self.preview_video_path = Some(video_path.clone());
+                    self.state = AppState::VideoPreview;
+                }
             }
         }
     }
 
     pub fn close_image_preview(&mut self) {
         self.preview_image_path = None;
+        self.preview_video_path = None; // Clear video path too
         self.state = AppState::Main;
+    }
+
+    pub fn close_video_preview(&mut self) {
+        self.preview_video_path = None;
+        self.state = AppState::Main;
+    }
+
+    pub fn play_video(&mut self) -> Result<()> {
+        // Get the actual video file path from the current message
+        if let Some(msg) = self.messages.get(self.selected_message_index) {
+            if let Some(video_path) = &msg.video_path {
+                // Используем mpv с правильными флагами для GUI режима
+                std::process::Command::new("mpv")
+                    .arg("--force-window=yes")  // Принудительно использовать GUI окно
+                    .arg("--no-terminal")       // Не использовать терминал для вывода
+                    .arg("--input-ipc-server=/tmp/mpv-socket") // IPC сокет для управления
+                    .arg(video_path)
+                    .spawn()
+                    .map_err(|e| anyhow::anyhow!("Не удалось запустить mpv: {}", e))?;
+            } else {
+                return Err(anyhow::anyhow!("Путь к видео файлу не найден"));
+            }
+        } else {
+            return Err(anyhow::anyhow!("Сообщение не найдено"));
+        }
+        Ok(())
     }
 
     pub async fn select_chat(&mut self) -> Result<()> {
@@ -452,9 +496,24 @@ impl App {
             AppState::Error => format!("Ошибка: {}", self.error_message),
             AppState::ImagePreview => {
                 if let Some(path) = &self.preview_image_path {
-                    format!("Предпросмотр изображения: {}", path)
+                    if let Some(video_path) = &self.preview_video_path {
+                        if !video_path.is_empty() {
+                            format!("Превью видео: {} | Enter: воспроизвести в mpv, Esc: назад", path)
+                        } else {
+                            format!("Предпросмотр изображения: {}", path)
+                        }
+                    } else {
+                        format!("Предпросмотр изображения: {}", path)
+                    }
                 } else {
                     "Предпросмотр изображения".to_string()
+                }
+            }
+            AppState::VideoPreview => {
+                if let Some(path) = &self.preview_video_path {
+                    format!("Предпросмотр видео: {} | Enter: воспроизвести в mpv, Esc: назад", path)
+                } else {
+                    "Предпросмотр видео".to_string()
                 }
             }
         }

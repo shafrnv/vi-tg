@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -44,16 +45,18 @@ type Dialog struct {
 }
 
 type Message struct {
-	ID           int
-	Text         string
-	From         string
-	Timestamp    time.Time
-	ChatID       int64
-	Type         string // "text", "sticker", "photo", "video", etc.
-	StickerID    int64  // ID стикера если Type == "sticker"
-	StickerEmoji string // Эмодзи стикера
-	StickerPath  string // Путь к файлу стикера (если скачан)
-	ImagePath    string // Путь к файлу изображения (если скачан)
+	ID               int
+	Text             string
+	From             string
+	Timestamp        time.Time
+	ChatID           int64
+	Type             string // "text", "sticker", "photo", "video", etc.
+	StickerID        int64  // ID стикера если Type == "sticker"
+	StickerEmoji     string // Эмодзи стикера
+	StickerPath      string // Путь к файлу стикера (если скачан)
+	ImagePath        string // Путь к файлу изображения (если скачан)
+	VideoPath        string // Путь к файлу видео (если скачан)
+	VideoPreviewPath string // Путь к превью видео (если сгенерировано)
 }
 
 // --- Кастомный UserAuthenticator для авторизации ---
@@ -472,6 +475,8 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 	stickerEmoji := ""
 	stickerPath := ""
 	imagePath := ""
+	videoPath := ""
+	videoPreviewPath := ""
 
 	debugLog("Обрабатываем сообщение %d, медиа: %v", message.ID, message.Media != nil)
 
@@ -481,6 +486,7 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 			debugLog("Сообщение %d содержит документ", message.ID)
 			if media.Document != nil {
 				if doc, ok := media.Document.(*tg.Document); ok {
+					isVideo := false
 					for _, attr := range doc.Attributes {
 						if stickerAttr, ok := attr.(*tg.DocumentAttributeSticker); ok {
 							msgType = "sticker"
@@ -490,6 +496,22 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 							debugLog("Сообщение %d содержит стикер: %s", message.ID, stickerEmoji)
 							break
 						}
+						if _, ok := attr.(*tg.DocumentAttributeVideo); ok {
+							isVideo = true
+							msgType = "video"
+							videoPath = downloadVideoFile(m.api, doc, message.ID)
+							if videoPath == "" {
+								debugLog("Не удалось скачать видео для сообщения %d", message.ID)
+							} else {
+								debugLog("Видео скачано: %s", videoPath)
+								// Генерируем превью для видео
+								videoPreviewPath = generateVideoPreview(videoPath, message.ID)
+							}
+							break
+						}
+					}
+					if !isVideo && msgType != "sticker" {
+						debugLog("Сообщение %d содержит документ неизвестного типа", message.ID)
 					}
 				}
 			}
@@ -512,16 +534,18 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 	}
 
 	return Message{
-		ID:           int(message.ID),
-		Text:         message.Message,
-		From:         fromName,
-		Timestamp:    ts,
-		ChatID:       peerID,
-		Type:         msgType,
-		StickerID:    stickerID,
-		StickerEmoji: stickerEmoji,
-		StickerPath:  stickerPath,
-		ImagePath:    imagePath,
+		ID:               int(message.ID),
+		Text:             message.Message,
+		From:             fromName,
+		Timestamp:        ts,
+		ChatID:           peerID,
+		Type:             msgType,
+		StickerID:        stickerID,
+		StickerEmoji:     stickerEmoji,
+		StickerPath:      stickerPath,
+		ImagePath:        imagePath,
+		VideoPath:        videoPath,
+		VideoPreviewPath: videoPreviewPath,
 	}
 }
 
@@ -1108,4 +1132,267 @@ func detectImageFormat(filePath string) string {
 
 	// Если формат не определен, возвращаем пустую строку
 	return ""
+}
+
+// downloadVideoFile скачивает видео файл
+func downloadVideoFile(api *tg.Client, doc *tg.Document, messageID int) string {
+	if api == nil || doc == nil {
+		debugLog("API или документ nil для сообщения %d", messageID)
+		return ""
+	}
+
+	debugLog("Начинаем скачивание видео для сообщения %d, Document ID: %d", messageID, doc.ID)
+
+	// Определяем расширение на основе MIME типа или атрибутов
+	ext := ".mp4" // По умолчанию MP4
+	for _, attr := range doc.Attributes {
+		if filename, ok := attr.(*tg.DocumentAttributeFilename); ok {
+			// Извлекаем расширение из имени файла
+			if strings.Contains(filename.FileName, ".") {
+				fileExt := filepath.Ext(filename.FileName)
+				if fileExt != "" {
+					ext = fileExt
+				}
+			}
+		}
+	}
+
+	// Проверяем, не скачан ли уже файл
+	possibleExtensions := []string{".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv"}
+	for _, testExt := range possibleExtensions {
+		existingPath := fmt.Sprintf("/tmp/vi-tg_video_%d%s", messageID, testExt)
+		if _, err := os.Stat(existingPath); err == nil {
+			debugLog("Видео файл уже существует: %s", existingPath)
+			return existingPath
+		}
+	}
+
+	// Путь для сохранения
+	fileName := fmt.Sprintf("/tmp/vi-tg_video_%d%s", messageID, ext)
+	debugLog("Сохраняем видео как: %s", fileName)
+
+	// Создаем файл
+	f, err := os.Create(fileName)
+	if err != nil {
+		debugLog("Ошибка создания файла %s: %v", fileName, err)
+		return ""
+	}
+	defer f.Close()
+
+	// Скачиваем файл по частям
+	offset := int64(0)
+	chunkSize := int(1024 * 1024) // 1MB чанки для видео
+	totalBytes := int64(0)
+	finished := false
+	chunkCount := 0
+
+	debugLog("Начинаем скачивание видео файла по частям")
+
+	for !finished {
+		chunkCount++
+		debugLog("Скачиваем чанк %d, offset: %d", chunkCount, offset)
+
+		resp, err := api.UploadGetFile(context.Background(), &tg.UploadGetFileRequest{
+			Precise:      true,
+			CDNSupported: false, // Отключаем CDN поддержку
+			Location: &tg.InputDocumentFileLocation{
+				ID:            doc.ID,
+				AccessHash:    doc.AccessHash,
+				FileReference: doc.FileReference,
+			},
+			Offset: offset,
+			Limit:  chunkSize,
+		})
+
+		if err != nil {
+			debugLog("Ошибка скачивания видео для сообщения %d: %v", messageID, err)
+			os.Remove(fileName)
+			return ""
+		}
+
+		// Обработка ответа
+		switch file := resp.(type) {
+		case *tg.UploadFile:
+			if len(file.Bytes) == 0 {
+				// Файл скачан полностью
+				debugLog("Получен пустой чанк, видео файл скачан полностью")
+				finished = true
+			} else {
+				// Записываем чанк в файл
+				if _, err := f.Write(file.Bytes); err != nil {
+					debugLog("Ошибка записи чанка в видео файл: %v", err)
+					os.Remove(fileName)
+					return ""
+				}
+				offset += int64(len(file.Bytes))
+				totalBytes += int64(len(file.Bytes))
+				debugLog("Записан чанк %d, размер: %d байт, общий размер: %d байт", chunkCount, len(file.Bytes), totalBytes)
+
+				// Если получили меньше данных чем запросили, значит файл закончился
+				if len(file.Bytes) < chunkSize {
+					debugLog("Получен последний чанк, видео файл закончен")
+					finished = true
+				}
+			}
+		case *tg.UploadFileCDNRedirect:
+			debugLog("Получен CDN редирект для видео")
+			// Скачиваем файл через CDN
+			cdnResp, err := api.UploadGetCDNFile(context.Background(), &tg.UploadGetCDNFileRequest{
+				FileToken: file.FileToken,
+				Offset:    offset,
+				Limit:     chunkSize,
+			})
+			if err != nil {
+				debugLog("Ошибка скачивания видео через CDN: %v", err)
+				os.Remove(fileName)
+				return ""
+			}
+
+			switch cdnData := cdnResp.(type) {
+			case *tg.UploadCDNFile:
+				if len(cdnData.Bytes) == 0 {
+					debugLog("Получен пустой CDN чанк, видео файл скачан полностью")
+					finished = true
+				} else {
+					// Записываем чанк в файл
+					if _, err := f.Write(cdnData.Bytes); err != nil {
+						debugLog("Ошибка записи CDN чанка в видео файл: %v", err)
+						os.Remove(fileName)
+						return ""
+					}
+					offset += int64(len(cdnData.Bytes))
+					totalBytes += int64(len(cdnData.Bytes))
+					debugLog("Записан CDN чанк %d, размер: %d байт, общий размер: %d байт", chunkCount, len(cdnData.Bytes), totalBytes)
+
+					// Если получили меньше данных чем запросили, значит файл закончился
+					if len(cdnData.Bytes) < chunkSize {
+						debugLog("Получен последний CDN чанк, видео файл закончен")
+						finished = true
+					}
+				}
+			default:
+				debugLog("Неожиданный тип CDN ответа: %T", cdnResp)
+				os.Remove(fileName)
+				return ""
+			}
+		default:
+			debugLog("Неожиданный тип ответа: %T", resp)
+			os.Remove(fileName)
+			return ""
+		}
+	}
+
+	debugLog("Скачивание видео завершено, общий размер: %d байт", totalBytes)
+
+	// Проверяем, что файл не пустой
+	if info, err := os.Stat(fileName); err != nil || info.Size() == 0 {
+		debugLog("Видео файл пустой или не существует: %v", err)
+		os.Remove(fileName)
+		return ""
+	}
+
+	debugLog("Видео файл успешно сохранен как %s", fileName)
+	return fileName
+}
+
+// generateVideoPreview генерирует превью для видео и возвращает путь к превью
+func generateVideoPreview(videoPath string, messageID int) string {
+	if videoPath == "" {
+		debugLog("Пустой путь к видео для сообщения %d", messageID)
+		return ""
+	}
+
+	// Проверяем, существует ли уже превью
+	previewPath := fmt.Sprintf("/tmp/vi-tg_video_preview_%d.jpg", messageID)
+	if _, err := os.Stat(previewPath); err == nil {
+		debugLog("Превью уже существует: %s", previewPath)
+		return previewPath
+	}
+
+	debugLog("Генерируем превью для видео: %s (ID: %d)", videoPath, messageID)
+
+	// Проверяем, существует ли видео файл
+	if _, err := os.Stat(videoPath); err != nil {
+		debugLog("Видео файл не найден: %s", videoPath)
+		return ""
+	}
+
+	// Получаем информацию о видео файле
+	videoInfo, err := os.Stat(videoPath)
+	if err != nil {
+		debugLog("Не удалось получить информацию о видео файле: %v", err)
+		return ""
+	}
+	debugLog("Размер видео файла: %d байт", videoInfo.Size())
+
+	// Создаем временный файл для превью
+	tempPreviewPath := fmt.Sprintf("/tmp/vi-tg_video_preview_%d_temp.jpg", messageID)
+
+	// Используем ffmpeg для генерации превью с улучшенными параметрами
+	previewCmd := fmt.Sprintf("/usr/bin/ffmpeg -i '%s' -ss 00:00:01.000 -vframes 1 -q:v 3 -vf 'scale=320:-1' -f image2 '%s' 2>&1", videoPath, tempPreviewPath)
+
+	debugLog("Выполняем команду: %s", previewCmd)
+
+	// Выполняем команду через sh
+	cmd := exec.Command("sh", "-c", previewCmd)
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		debugLog("Ошибка генерации превью для видео %s: %v", videoPath, err)
+		debugLog("Вывод команды: %s", string(output))
+
+		// Попробуем альтернативный подход с другой временной меткой
+		previewCmd2 := fmt.Sprintf("/usr/bin/ffmpeg -i '%s' -ss 00:00:00.500 -vframes 1 -q:v 3 -vf 'scale=320:-1' -f image2 '%s' 2>&1", videoPath, tempPreviewPath)
+		debugLog("Пробуем альтернативную команду: %s", previewCmd2)
+		cmd2 := exec.Command("sh", "-c", previewCmd2)
+		output2, err2 := cmd2.CombinedOutput()
+
+		if err2 != nil {
+			debugLog("Ошибка генерации превью (альтернативный метод) для видео %s: %v", videoPath, err2)
+			debugLog("Вывод альтернативной команды: %s", string(output2))
+			return ""
+		}
+
+		// Проверяем, создался ли файл после второй попытки
+		if _, err := os.Stat(tempPreviewPath); err != nil {
+			debugLog("Вторая попытка также не создала файл превью: %s", tempPreviewPath)
+			return ""
+		}
+	} else {
+		// Проверяем, создался ли файл после первой попытки
+		if _, err := os.Stat(tempPreviewPath); err != nil {
+			debugLog("Первая попытка не создала файл превью: %s", tempPreviewPath)
+			return ""
+		}
+	}
+
+	// Проверяем, что временный файл был создан
+	if _, err := os.Stat(tempPreviewPath); err != nil {
+		debugLog("Временный файл превью не был создан: %s", tempPreviewPath)
+		return ""
+	}
+
+	// Проверяем размер временного файла
+	if info, err := os.Stat(tempPreviewPath); err != nil || info.Size() < 100 {
+		debugLog("Сгенерированный превью файл слишком мал: %s (размер: %d байт)", tempPreviewPath, info.Size())
+		os.Remove(tempPreviewPath)
+		return ""
+	}
+
+	// Переименовываем временный файл в постоянный
+	if err := os.Rename(tempPreviewPath, previewPath); err != nil {
+		debugLog("Не удалось переименовать временный файл: %v", err)
+		os.Remove(tempPreviewPath)
+		return ""
+	}
+
+	// Финальная проверка
+	if info, err := os.Stat(previewPath); err != nil {
+		debugLog("Не удалось получить информацию о финальном файле превью: %v", err)
+		return ""
+	} else {
+		debugLog("Превью успешно сгенерировано: %s (размер: %d байт)", previewPath, info.Size())
+	}
+
+	return previewPath
 }

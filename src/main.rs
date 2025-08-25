@@ -31,6 +31,9 @@ pub struct Message {
     pub sticker_path: Option<String>,
     pub image_id: Option<i64>,
     pub image_path: Option<String>,
+    pub video_id: Option<i64>,
+    pub video_path: Option<String>,
+    pub video_preview_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,7 +169,23 @@ async fn run_tui(mut app: App) -> Result<()> {
                                 }
                             }
                             AppState::ImagePreview => {
-                                app.close_image_preview();
+                                // If this is a video preview (has video path stored), play the video
+                                if let Some(video_path) = &app.preview_video_path {
+                                    if !video_path.is_empty() {
+                                        if let Err(e) = app.play_video() {
+                                            app.show_error(&format!("Ошибка воспроизведения видео: {}", e));
+                                        }
+                                    } else {
+                                        app.close_image_preview();
+                                    }
+                                } else {
+                                    app.close_image_preview();
+                                }
+                            }
+                            AppState::VideoPreview => {
+                                if let Err(e) = app.play_video() {
+                                    app.show_error(&format!("Ошибка воспроизведения видео: {}", e));
+                                }
                             }
                             _ => {}
                         }
@@ -180,6 +199,8 @@ async fn run_tui(mut app: App) -> Result<()> {
                             app.focus_chats();
                         } else if app.state == AppState::ImagePreview {
                             app.close_image_preview();
+                        } else if app.state == AppState::VideoPreview {
+                            app.close_video_preview();
                         }
                     }
                     crossterm::event::KeyCode::Char(c) => {

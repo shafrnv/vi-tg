@@ -73,17 +73,20 @@ type ChatsResponse struct {
 }
 
 type MessageResponse struct {
-	ID           int     `json:"id"`
-	Text         string  `json:"text"`
-	From         string  `json:"from"`
-	Timestamp    string  `json:"timestamp"`
-	ChatID       int64   `json:"chat_id"`
-	Type         string  `json:"type"`
-	StickerID    *int64  `json:"sticker_id"`
-	StickerEmoji *string `json:"sticker_emoji"`
-	StickerPath  *string `json:"sticker_path"`
-	ImageID      *int64  `json:"image_id"`
-	ImagePath    *string `json:"image_path"`
+	ID               int     `json:"id"`
+	Text             string  `json:"text"`
+	From             string  `json:"from"`
+	Timestamp        string  `json:"timestamp"`
+	ChatID           int64   `json:"chat_id"`
+	Type             string  `json:"type"`
+	StickerID        *int64  `json:"sticker_id"`
+	StickerEmoji     *string `json:"sticker_emoji"`
+	StickerPath      *string `json:"sticker_path"`
+	ImageID          *int64  `json:"image_id"`
+	ImagePath        *string `json:"image_path"`
+	VideoID          *int64  `json:"video_id"`
+	VideoPath        *string `json:"video_path"`
+	VideoPreviewPath *string `json:"video_preview_path"`
 }
 
 type MessagesResponse struct {
@@ -136,6 +139,9 @@ func (s *APIServer) Start() error {
 
 	// Image endpoints
 	api.HandleFunc("/images/{image_id}", s.getImage).Methods("GET")
+
+	// Video endpoints
+	api.HandleFunc("/videos/{video_id}", s.getVideo).Methods("GET")
 
 	// Health check
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -375,6 +381,33 @@ func (s *APIServer) getMessages(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Add support for video paths
+		if msg.Type == "video" {
+			videoID := int64(msg.ID)
+			// Всегда устанавливаем VideoID для видео
+			msgResponse.VideoID = &videoID
+
+			// Проверяем различные форматы видео
+			videoExtensions := []string{".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv"}
+			for _, ext := range videoExtensions {
+				videoPath := fmt.Sprintf("/tmp/vi-tg_video_%d%s", videoID, ext)
+				if _, err := os.Stat(videoPath); err == nil {
+					msgResponse.VideoPath = &videoPath
+					break
+				}
+			}
+
+			// Проверяем превью видео (извлеченный первый кадр)
+			previewExtensions := []string{".jpg", ".jpeg", ".png", ".webp"}
+			for _, ext := range previewExtensions {
+				previewPath := fmt.Sprintf("/tmp/vi-tg_video_preview_%d%s", videoID, ext)
+				if _, err := os.Stat(previewPath); err == nil {
+					msgResponse.VideoPreviewPath = &previewPath
+					break
+				}
+			}
+		}
+
 		messageResponses = append(messageResponses, msgResponse)
 	}
 
@@ -512,6 +545,66 @@ func (s *APIServer) getImage(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(imagePath)
 	if err != nil {
 		s.sendError(w, "Ошибка чтения файла изображения", http.StatusInternalServerError)
+		return
+	}
+
+	// Устанавливаем заголовки
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+
+	// Отправляем данные
+	w.Write(data)
+}
+
+func (s *APIServer) getVideo(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	videoIDStr := vars["video_id"]
+	videoID, err := strconv.ParseInt(videoIDStr, 10, 64)
+	if err != nil {
+		s.sendError(w, "Неверный ID видео", http.StatusBadRequest)
+		return
+	}
+
+	// Ищем файл видео с различными расширениями
+	videoExtensions := []string{".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv"}
+	var videoPath string
+	var contentType string
+
+	for _, ext := range videoExtensions {
+		testPath := fmt.Sprintf("/tmp/vi-tg_video_%d%s", videoID, ext)
+		if _, err := os.Stat(testPath); err == nil {
+			videoPath = testPath
+			// Определяем MIME тип на основе расширения
+			switch ext {
+			case ".mp4":
+				contentType = "video/mp4"
+			case ".avi":
+				contentType = "video/x-msvideo"
+			case ".mkv":
+				contentType = "video/x-matroska"
+			case ".mov":
+				contentType = "video/quicktime"
+			case ".webm":
+				contentType = "video/webm"
+			case ".flv":
+				contentType = "video/x-flv"
+			default:
+				contentType = "video/mp4"
+			}
+			break
+		}
+	}
+
+	if videoPath == "" {
+		s.sendError(w, "Видео не найдено", http.StatusNotFound)
+		return
+	}
+
+	// Читаем файл
+	data, err := os.ReadFile(videoPath)
+	if err != nil {
+		s.sendError(w, "Ошибка чтения файла видео", http.StatusInternalServerError)
 		return
 	}
 

@@ -18,6 +18,7 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         AppState::MessageInput => draw_main_screen(f, app),
         AppState::Error => draw_error_screen(f, app),
         AppState::ImagePreview => draw_image_preview(f, app),
+        AppState::VideoPreview => draw_video_preview(f, app),
     }
 }
 
@@ -207,31 +208,25 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     if app.selected_message_index < app.messages.len() {
         let visible_height = inner_area.height as usize;
 
-        // Проверяем, является ли выбранное сообщение изображением
+        // Проверяем, является ли выбранное сообщение изображением или видео
         let selected_msg = &app.messages[app.selected_message_index];
         let is_image_selected = app.focus_on_messages && selected_msg.r#type == "photo";
-        let selected_message_height = if is_image_selected { image_height as usize } else { 1 };
+        let is_video_selected = app.focus_on_messages && selected_msg.r#type == "video";
 
-        // Если изображение выбрано, проверяем, помещается ли оно
-        if is_image_selected {
-            // Рассчитываем позицию выбранного сообщения в видимой области
-            let messages_before_selected = app.selected_message_index;
-            let total_height_needed = messages_before_selected + selected_message_height;
+        // Проверяем, находится ли изображение в последних 12 строках
+        let last_message_index = app.messages.len().saturating_sub(1);
+        let last_12_messages_start = last_message_index.saturating_sub(11); // 12 строк от конца
 
-            // Если изображение не помещается полностью, прокручиваем к нему
-            if total_height_needed > visible_height {
-                // Показываем изображение в верхней части экрана с небольшим отступом
-                start_index = app.selected_message_index.saturating_sub(2);
-            } else {
-                // Обычная логика - показываем последние сообщения
-                start_index = app.messages.len().saturating_sub(visible_height);
-            }
+        if (is_image_selected || is_video_selected) && app.selected_message_index >= last_12_messages_start {
+            // Для изображений и видео в последних 12 строках: прокручиваем на 11 строк вниз
+            let base_start = app.messages.len().saturating_sub(visible_height);
+            start_index = base_start + 11; // Прокрутка на 11 строк
+            start_index = start_index.min(app.messages.len().saturating_sub(1));
         } else {
-            // Обычная логика для обычных сообщений
+            // Для обычных сообщений или изображений не в последних 12 строках: обычная логика
             start_index = app.messages.len().saturating_sub(visible_height);
 
             // Определяем диапазон, в котором маркер может перемещаться без прокрутки
-            let last_message_index = app.messages.len().saturating_sub(1);
             let cursor_range_start = last_message_index.saturating_sub(10);
 
             // Если маркер в диапазоне последних 10 сообщений - не прокручиваем
@@ -259,7 +254,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     while index < app.messages.len() && y_offset < available_height {
         let msg = &app.messages[index];
         let is_selected = app.focus_on_messages && index == app.selected_message_index;
-        let current_height = if msg.r#type == "photo" {
+        let current_height = if msg.r#type == "photo" || msg.r#type == "video" {
             if is_selected { image_height } else { message_height }
         } else { message_height };
 
@@ -297,6 +292,18 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
                     let text_content = format!("{} {}: {}", time, msg.from, label);
                     let text_widget = Paragraph::new(text_content)
                         .style(Style::default().fg(Color::Cyan))
+                        .wrap(Wrap { trim: true });
+                    f.render_widget(text_widget, message_area);
+                }
+            }
+            "video" => {
+                if is_selected {
+                    draw_video_message(f, msg, message_area, time, picker.as_ref());
+                } else {
+                    let label = "[🎬 Видео — Enter: открыть]";
+                    let text_content = format!("{} {}: {}", time, msg.from, label);
+                    let text_widget = Paragraph::new(text_content)
+                        .style(Style::default().fg(Color::Green))
                         .wrap(Wrap { trim: true });
                     f.render_widget(text_widget, message_area);
                 }
@@ -403,21 +410,25 @@ fn draw_photo_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
 
 fn try_display_image(image_path: &str, picker: &Picker, _area: Rect) -> Result<StatefulProtocol, String> {
     if !std::path::Path::new(image_path).exists() {
-        return Err("файл не найден".to_string());
+        return Err(format!("файл не найден: {}", image_path));
     }
-    
+
     let metadata = std::fs::metadata(image_path)
-        .map_err(|_| "не удалось получить метаданные")?;
-    
+        .map_err(|e| format!("не удалось получить метаданные: {}", e))?;
+
     if metadata.len() < 100 {
-        return Err("файл слишком мал".to_string());
+        return Err(format!("файл слишком мал: {} байт", metadata.len()));
     }
-    
+
+    // Проверяем, что файл не пустой и читаемый
+    let file = std::fs::File::open(image_path)
+        .map_err(|e| format!("не удалось открыть файл: {}", e))?;
+
     let dyn_img = image::open(image_path)
-        .map_err(|e| format!("не удалось открыть: {}", e))?;
-    
+        .map_err(|e| format!("не удалось открыть изображение: {} (путь: {})", e, image_path))?;
+
     let protocol = picker.new_resize_protocol(dyn_img);
-    
+
     Ok(protocol)
 }
 
@@ -510,18 +521,170 @@ fn draw_image_preview(f: &mut Frame, app: &App) {
         }
     }
 
-    // Нижняя подсказка
-    let hint = Paragraph::new("Esc/Enter: выйти из просмотра")
+    // Нижняя подсказка - зависит от типа превью
+    let (hint_text, title) = if let Some(video_path) = &app.preview_video_path {
+        if !video_path.is_empty() {
+            // Это видео превью
+            ("Enter: воспроизвести в mpv | Esc: назад", "Превью видео")
+        } else {
+            // Это обычное изображение
+            ("Esc/Enter: выйти из просмотра", "Просмотр изображения")
+        }
+    } else {
+        // Это обычное изображение
+        ("Esc/Enter: выйти из просмотра", "Просмотр изображения")
+    };
+
+    let hint = Paragraph::new(hint_text)
         .style(Style::default().fg(Color::Gray))
-        .block(Block::default().borders(Borders::ALL).title("Просмотр изображения"));
+        .block(Block::default().borders(Borders::ALL).title(title));
     let hint_area = Rect { x: area.x + 2, y: area.y + area.height.saturating_sub(3), width: area.width.saturating_sub(4), height: 3 };
     f.render_widget(hint, hint_area);
 }
 
 fn try_display_image_full(image_path: &str, picker: &Picker) -> Result<StatefulProtocol, String> {
     if !std::path::Path::new(image_path).exists() {
-        return Err("файл не найден".to_string());
+        return Err(format!("файл не найден: {}", image_path));
     }
-    let dyn_img = image::open(image_path).map_err(|e| format!("не удалось открыть: {}", e))?;
+
+    // Проверяем размер файла
+    let metadata = std::fs::metadata(image_path)
+        .map_err(|e| format!("не удалось получить метаданные: {}", e))?;
+
+    if metadata.len() < 100 {
+        return Err(format!("файл слишком мал: {} байт (путь: {})", metadata.len(), image_path));
+    }
+
+    // Проверяем, что файл читаем
+    let _file = std::fs::File::open(image_path)
+        .map_err(|e| format!("не удалось открыть файл: {} (путь: {})", e, image_path))?;
+
+    // Пытаемся определить формат по первым байтам
+    if let Ok(header) = std::fs::read(image_path) {
+        if header.is_empty() || header.len() < 4 {
+            return Err(format!("файл пустой или слишком мал для определения формата (путь: {})", image_path));
+        }
+
+        // Проверяем магические байты различных форматов
+        let is_jpeg = header.len() >= 2 && header[0] == 0xFF && header[1] == 0xD8;
+        let is_png = header.len() >= 8 && header[0] == 0x89 && header[1] == 0x50 && header[2] == 0x4E && header[3] == 0x47;
+        let is_gif = header.len() >= 4 && header[0] == 0x47 && header[1] == 0x49 && header[2] == 0x46 && header[3] == 0x38;
+
+        if !is_jpeg && !is_png && !is_gif {
+            return Err(format!("неподдерживаемый формат файла (путь: {}). Поддерживаемые: JPEG, PNG, GIF", image_path));
+        }
+    }
+
+    let dyn_img = image::open(image_path)
+        .map_err(|e| format!("не удалось открыть изображение: {} (путь: {})", e, image_path))?;
+
     Ok(picker.new_resize_protocol(dyn_img))
+}
+
+fn draw_video_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, picker: Option<&Picker>) {
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    // Проверяем, достаточно ли места для отображения текста сверху
+    let has_space_for_text = inner_area.height > 1;
+
+    let _text_area = if has_space_for_text {
+        // Метаданные сверху
+        let text_rect = Rect {
+            x: inner_area.x,
+            y: inner_area.y,
+            width: inner_area.width,
+            height: 1,
+        };
+
+        let text_content = format!("{} {}:", time, msg.from);
+        let text_widget = Paragraph::new(text_content)
+            .style(Style::default().fg(Color::Yellow));
+        f.render_widget(text_widget, text_rect);
+
+        text_rect
+    } else {
+        // Если нет места для текста, возвращаем пустую область
+        Rect::default()
+    };
+
+    // Превью видео снизу от метаданных
+    let preview_area = Rect {
+        x: inner_area.x,
+        y: if has_space_for_text { inner_area.y + 1 } else { inner_area.y },
+        width: inner_area.width,
+        height: if has_space_for_text { inner_area.height.saturating_sub(1) } else { inner_area.height },
+    };
+
+    if let Some(preview_path) = &msg.video_preview_path {
+        if let Some(picker) = picker {
+            match try_display_image(preview_path, picker, preview_area) {
+                Ok(mut protocol) => {
+                    let image_widget = StatefulImage::new();
+                    f.render_stateful_widget(image_widget, preview_area, &mut protocol);
+                }
+                Err(e) => {
+                    let error_text = format!("[🎬 Ошибка превью: {}]", e);
+                    let error_widget = Paragraph::new(error_text)
+                        .style(Style::default().fg(Color::Red));
+                    f.render_widget(error_widget, preview_area);
+                }
+            }
+        } else {
+            let placeholder = Paragraph::new("[🎬 Терминал не поддерживает изображения]")
+                .style(Style::default().fg(Color::Yellow));
+            f.render_widget(placeholder, preview_area);
+        }
+    } else {
+        let placeholder = Paragraph::new("[🎬 Загрузка превью...]")
+            .style(Style::default().fg(Color::Blue));
+        f.render_widget(placeholder, preview_area);
+    }
+
+    let message_block = Block::default();
+    f.render_widget(message_block, area);
+}
+
+fn draw_video_preview(f: &mut Frame, app: &App) {
+    let area = f.area();
+
+    // Чёрный фон на весь экран
+    let overlay = Block::default().style(Style::default().bg(Color::Black));
+    f.render_widget(Clear, area); // очистка
+    f.render_widget(overlay, area);
+
+    // Рисуем превью видео, если путь есть
+    if let Some(preview_path) = &app.preview_video_path {
+        let inner = Rect { x: area.x + 1, y: area.y + 1, width: area.width.saturating_sub(2), height: area.height.saturating_sub(4) };
+        if let Ok(picker) = Picker::from_query_stdio() {
+            match try_display_image_full(preview_path, &picker) {
+                Ok(mut protocol) => {
+                    let widget = StatefulImage::new();
+                    f.render_stateful_widget(widget, inner, &mut protocol);
+                }
+                Err(e) => {
+                    let text = Paragraph::new(format!("Не удалось отобразить превью видео: {}", e))
+                        .style(Style::default().fg(Color::Red))
+                        .wrap(Wrap { trim: true });
+                    f.render_widget(text, inner);
+                }
+            }
+        } else {
+            let text = Paragraph::new("Терминал не поддерживает отрисовку изображений")
+                .style(Style::default().fg(Color::Yellow))
+                .wrap(Wrap { trim: true });
+            f.render_widget(text, inner);
+        }
+    }
+
+    // Нижняя подсказка
+    let hint = Paragraph::new("Enter: воспроизвести в mpv | Esc: назад")
+        .style(Style::default().fg(Color::Gray))
+        .block(Block::default().borders(Borders::ALL).title("Превью видео"));
+    let hint_area = Rect { x: area.x + 2, y: area.y + area.height.saturating_sub(3), width: area.width.saturating_sub(4), height: 3 };
+    f.render_widget(hint, hint_area);
 }
