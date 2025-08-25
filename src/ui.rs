@@ -352,7 +352,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             }
             "voice" => {
                 if is_selected {
-                    draw_voice_message(f, msg, message_area, time, &app.audio_player);
+                    draw_voice_message(f, msg, message_area, time, &app.audio_player, app);
                 } else {
                     let duration_text = if let Some(duration) = msg.voice_duration {
                         format_duration(duration)
@@ -369,7 +369,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             }
             "audio" => {
                 if is_selected {
-                    draw_audio_message(f, msg, message_area, time, &app.audio_player);
+                    draw_audio_message(f, msg, message_area, time, &app.audio_player, app);
                 } else {
                     let duration_text = if let Some(duration) = msg.audio_duration {
                         format_duration(duration)
@@ -921,7 +921,7 @@ fn draw_video_preview(f: &mut Frame, app: &App) {
     f.render_widget(hint, hint_area);
 }
 
-fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer) {
+fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer, app: &crate::App) {
     let inner_area = Rect {
         x: area.x + 1,
         y: area.y + 1,
@@ -970,24 +970,14 @@ fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
     // Проверяем, является ли это текущее проигрываемое сообщение
     let is_current = audio_player.is_current_message(msg.id);
 
-    // Создаем улучшенную волновую форму
-    let wave_chars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-    let mut wave_display = String::new();
-
-    // Создаем волновую форму в зависимости от длительности
-    if let Some(duration) = msg.voice_duration {
-        let wave_length = (voice_area.width as usize).min(40); // Увеличиваем до 40 символов для лучшей визуализации
-        for i in 0..wave_length {
-            // Создаем более реалистичную волновую форму с вариациями
-            let base_wave = (i * duration as usize / wave_length) % wave_chars.len();
-            let variation = (i * 7 + duration as usize) % 3; // Добавляем вариации для более реалистичного вида
-            let wave_index = (base_wave + variation).min(wave_chars.len() - 1);
-            wave_display.push_str(wave_chars[wave_index]);
-        }
+    // Создаем динамическую волновую форму
+    let wave_display = if let Some(waveform_data) = app.waveform_cache.get(&msg.id) {
+        // Используем реальные данные waveform
+        create_dynamic_waveform(waveform_data, voice_area.width as usize, audio_player, is_current)
     } else {
-        // Если длительность неизвестна, показываем статичную волну
-        wave_display = "▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂".to_string();
-    }
+        // Fallback к статичной волновой форме
+        create_static_waveform(msg.voice_duration, voice_area.width as usize)
+    };
 
     // Создаем более компактный дизайн с элементами управления
     let mut voice_lines = vec![
@@ -1012,7 +1002,7 @@ fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
     f.render_widget(voice_widget, voice_area);
 }
 
-fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer) {
+fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer, app: &crate::App) {
     let inner_area = Rect {
         x: area.x + 1,
         y: area.y + 1,
@@ -1072,24 +1062,14 @@ fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
     // Проверяем, является ли это текущее проигрываемое сообщение
     let is_current = audio_player.is_current_message(msg.id);
 
-    // Создаем улучшенную волновую форму
-    let wave_chars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-    let mut wave_display = String::new();
-
-    // Создаем волновую форму в зависимости от длительности
-    if let Some(duration) = msg.audio_duration {
-        let wave_length = (audio_area.width as usize).min(40); // Увеличиваем до 40 символов для лучшей визуализации
-        for i in 0..wave_length {
-            // Создаем более реалистичную волновую форму с вариациями
-            let base_wave = (i * duration as usize / wave_length) % wave_chars.len();
-            let variation = (i * 7 + duration as usize) % 3; // Добавляем вариации для более реалистичного вида
-            let wave_index = (base_wave + variation).min(wave_chars.len() - 1);
-            wave_display.push_str(wave_chars[wave_index]);
-        }
+    // Создаем динамическую волновую форму
+    let wave_display = if let Some(waveform_data) = app.waveform_cache.get(&msg.id) {
+        // Используем реальные данные waveform
+        create_dynamic_waveform(waveform_data, audio_area.width as usize, audio_player, is_current)
     } else {
-        // Если длительность неизвестна, показываем статичную волну
-        wave_display = "▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂".to_string();
-    }
+        // Fallback к статичной волновой форме
+        create_static_waveform(msg.audio_duration, audio_area.width as usize)
+    };
 
     // Создаем более компактный дизайн с элементами управления
     let mut audio_lines = vec![
@@ -1112,4 +1092,84 @@ fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
         .wrap(Wrap { trim: true });
 
     f.render_widget(audio_widget, audio_area);
+}
+
+// Функция для создания динамической волновой формы с индикатором прогресса
+fn create_dynamic_waveform(waveform_data: &crate::app::WaveformData, width: usize, audio_player: &crate::app::AudioPlayer, is_current: bool) -> String {
+    if waveform_data.amplitudes.is_empty() {
+        return create_static_waveform(None, width);
+    }
+
+    let wave_chars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    let mut result = String::new();
+
+    // Определяем позицию прогресса
+    let progress_position = if is_current && audio_player.is_playing {
+        let progress_ratio = audio_player.current_position.as_secs_f64() / waveform_data.duration.as_secs_f64();
+        (progress_ratio * (waveform_data.amplitudes.len() - 1) as f64) as usize
+    } else {
+        0
+    };
+
+    // Создаем волновую форму с индикатором прогресса
+    for i in 0..width.min(waveform_data.amplitudes.len()) {
+        let amplitude = waveform_data.amplitudes[i];
+        let char_index = (amplitude * (wave_chars.len() - 1) as f32) as usize;
+
+        let mut display_char = wave_chars[char_index];
+
+        // Добавляем индикатор прогресса
+        if is_current && i == progress_position.min(width - 1) {
+            display_char = match display_char {
+                "▁" => "▁",
+                "▂" => "▂",
+                "▃" => "▃",
+                "▄" => "▄",
+                "▅" => "▅",
+                "▆" => "▆",
+                "▇" => "▇",
+                "█" => "█",
+                _ => "█",
+            };
+        }
+
+        result.push_str(display_char);
+    }
+
+    // Заполняем оставшееся пространство, если waveform короче
+    while result.len() < width {
+        result.push('▁');
+    }
+
+    result
+}
+
+// Функция для создания статичной волновой формы (fallback)
+fn create_static_waveform(duration: Option<i32>, width: usize) -> String {
+    let wave_chars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    let mut result = String::new();
+
+    // Создаем волновую форму в зависимости от длительности
+    if let Some(duration) = duration {
+        for i in 0..width {
+            // Создаем более реалистичную волновую форму с вариациями
+            let base_wave = (i * duration as usize / width) % wave_chars.len();
+            let variation = (i * 7 + duration as usize) % 3; // Добавляем вариации для более реалистичного вида
+            let wave_index = (base_wave + variation).min(wave_chars.len() - 1);
+            result.push_str(wave_chars[wave_index]);
+        }
+    } else {
+        // Если длительность неизвестна, показываем статичную волну
+        let static_wave = "▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂";
+        let pattern_len = static_wave.chars().count();
+
+        for i in 0..width {
+            let char_index = i % pattern_len;
+            if let Some(ch) = static_wave.chars().nth(char_index) {
+                result.push(ch);
+            }
+        }
+    }
+
+    result
 }

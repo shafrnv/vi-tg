@@ -1,9 +1,213 @@
 use anyhow::Result;
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::api::ApiClient;
 use crate::{AuthStatus, Chat, Message};
+
+// Структура для хранения данных waveform
+#[derive(Debug, Clone)]
+pub struct WaveformData {
+    pub amplitudes: Vec<f32>,  // Нормализованные амплитуды (0.0 - 1.0)
+    pub sample_rate: u32,
+    pub duration: Duration,
+}
+
+impl WaveformData {
+    pub fn new() -> Self {
+        Self {
+            amplitudes: Vec::new(),
+            sample_rate: 44100,
+            duration: Duration::ZERO,
+        }
+    }
+
+    // Функция для анализа аудио файла и извлечения амплитуд
+    pub fn analyze_audio_file(file_path: &str) -> Result<Self> {
+        // Пробуем разные методы анализа в зависимости от формата файла
+
+        // Метод 1: Используем hound для WAV файлов
+        if file_path.to_lowercase().ends_with(".wav") {
+            return Self::analyze_wav_file(file_path);
+        }
+
+        // Метод 2: Используем ffmpeg для других форматов
+        Self::analyze_with_ffmpeg(file_path)
+    }
+
+    fn analyze_wav_file(file_path: &str) -> Result<Self> {
+        use hound::WavReader;
+
+        let reader = WavReader::open(file_path)?;
+        let spec = reader.spec();
+        let samples: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Float => reader
+                .into_samples::<f32>()
+                .collect::<Result<Vec<f32>, _>>()?,
+            hound::SampleFormat::Int => reader
+                .into_samples::<i32>()
+                .map(|s| s.map(|sample| sample as f32 / i32::MAX as f32))
+                .collect::<Result<Vec<f32>, _>>()?,
+        };
+
+        // Вычисляем RMS для каждого окна (для создания waveform)
+        let window_size = (spec.sample_rate / 50) as usize; // ~20ms окна
+        let mut amplitudes = Vec::new();
+        let mut max_amplitude = 0.0f32;
+
+        for chunk in samples.chunks(window_size) {
+            let rms = (chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len() as f32).sqrt();
+            amplitudes.push(rms);
+            if rms > max_amplitude {
+                max_amplitude = rms;
+            }
+        }
+
+        // Нормализуем амплитуды
+        if max_amplitude > 0.0 {
+            for amp in &mut amplitudes {
+                *amp /= max_amplitude;
+            }
+        }
+
+        // Ограничиваем количество точек для UI (максимум 100 точек)
+        let target_points = 100;
+        if amplitudes.len() > target_points {
+            amplitudes = Self::resample(&amplitudes, target_points);
+        }
+
+        let duration = Duration::from_secs_f64(samples.len() as f64 / spec.sample_rate as f64);
+
+        Ok(Self {
+            amplitudes,
+            sample_rate: spec.sample_rate,
+            duration,
+        })
+    }
+
+    fn analyze_with_ffmpeg(file_path: &str) -> Result<Self> {
+        use std::process::Command;
+
+        // Используем ffmpeg для извлечения raw аудио данных
+        let output = Command::new("ffmpeg")
+            .args(&[
+                "-i", file_path,
+                "-f", "f32le",
+                "-acodec", "pcm_f32le",
+                "-ac", "1",  // моно
+                "-ar", "44100",  // 44.1kHz
+                "-y",
+                "-"  // вывод в stdout
+            ])
+            .output()?;
+
+        if !output.status.success() {
+            return Err(anyhow::anyhow!("ffmpeg failed to analyze audio file"));
+        }
+
+        // Конвертируем байты в f32 сэмплы
+        let mut samples = Vec::new();
+        let bytes = output.stdout;
+        for chunk in bytes.chunks_exact(4) {
+            if let [b0, b1, b2, b3] = chunk {
+                let sample = f32::from_le_bytes([*b0, *b1, *b2, *b3]);
+                samples.push(sample);
+            }
+        }
+
+        // Аналогично методу analyze_wav_file
+        let window_size = 44100 / 50; // ~20ms окна при 44.1kHz
+        let mut amplitudes = Vec::new();
+        let mut max_amplitude = 0.0f32;
+
+        for chunk in samples.chunks(window_size) {
+            let rms = (chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len() as f32).sqrt();
+            amplitudes.push(rms);
+            if rms > max_amplitude {
+                max_amplitude = rms;
+            }
+        }
+
+        // Нормализуем
+        if max_amplitude > 0.0 {
+            for amp in &mut amplitudes {
+                *amp /= max_amplitude;
+            }
+        }
+
+        // Ограничиваем количество точек
+        let target_points = 100;
+        if amplitudes.len() > target_points {
+            amplitudes = Self::resample(&amplitudes, target_points);
+        }
+
+        // Получаем длительность через ffprobe
+        let duration_output = Command::new("ffprobe")
+            .args(&[
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_format",
+                file_path
+            ])
+            .output()?;
+
+        let duration = if duration_output.status.success() {
+            let json: serde_json::Value = serde_json::from_slice(&duration_output.stdout)?;
+            if let Some(duration_str) = json["format"]["duration"].as_str() {
+                Duration::from_secs_f64(duration_str.parse::<f64>().unwrap_or(0.0))
+            } else {
+                Duration::ZERO
+            }
+        } else {
+            Duration::ZERO
+        };
+
+        Ok(Self {
+            amplitudes,
+            sample_rate: 44100,
+            duration,
+        })
+    }
+
+    // Функция для ресемплинга массива амплитуд
+    fn resample(data: &[f32], target_len: usize) -> Vec<f32> {
+        if data.is_empty() {
+            return Vec::new();
+        }
+
+        let mut result = Vec::with_capacity(target_len);
+        let ratio = data.len() as f32 / target_len as f32;
+
+        for i in 0..target_len {
+            let src_index = i as f32 * ratio;
+            let src_index_int = src_index as usize;
+            let frac = src_index - src_index_int as f32;
+
+            if src_index_int + 1 < data.len() {
+                let interpolated = data[src_index_int] * (1.0 - frac) + data[src_index_int + 1] * frac;
+                result.push(interpolated);
+            } else {
+                result.push(data[src_index_int]);
+            }
+        }
+
+        result
+    }
+
+    // Получить амплитуду в определенной позиции (для прогресса воспроизведения)
+    pub fn get_amplitude_at_position(&self, position: Duration) -> f32 {
+        if self.amplitudes.is_empty() || self.duration == Duration::ZERO {
+            return 0.0;
+        }
+
+        let progress_ratio = position.as_secs_f64() / self.duration.as_secs_f64();
+        let index = (progress_ratio * (self.amplitudes.len() - 1) as f64) as usize;
+        let index = index.min(self.amplitudes.len() - 1);
+
+        self.amplitudes[index]
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AudioPlayer {
@@ -288,6 +492,9 @@ pub struct App {
 
     // Аудио плеер состояние
     pub audio_player: AudioPlayer,
+
+    // Кэш данных waveform для динамической визуализации
+    pub waveform_cache: HashMap<i32, Arc<WaveformData>>,
 }
 
 impl App {
@@ -320,6 +527,7 @@ impl App {
             audio_start_time: None,
             visible_capacity: 15, // Значение по умолчанию
             audio_player: AudioPlayer::new(),
+            waveform_cache: HashMap::new(),
         }
     }
 
@@ -835,6 +1043,21 @@ impl App {
                     return Ok(());
                 }
 
+                // Анализируем аудио файл для waveform, если еще не проанализирован
+                if !self.waveform_cache.contains_key(&msg.id) {
+                    log::info!("Анализируем waveform для голосового сообщения {}", msg.id);
+                    match WaveformData::analyze_audio_file(voice_path) {
+                        Ok(waveform_data) => {
+                            self.waveform_cache.insert(msg.id, Arc::new(waveform_data));
+                            log::info!("Waveform успешно проанализирован для сообщения {}", msg.id);
+                        }
+                        Err(e) => {
+                            log::warn!("Не удалось проанализировать waveform для {}: {}", voice_path, e);
+                            // Продолжаем без waveform данных
+                        }
+                    }
+                }
+
                 // Инициализируем состояние аудио плеера
                 self.audio_player.current_message_id = Some(msg.id);
                 self.audio_player.current_position = Duration::ZERO;
@@ -936,6 +1159,21 @@ impl App {
                     self.audio_player.stop();
                     log::info!("Остановлено воспроизведение аудио сообщения");
                     return Ok(());
+                }
+
+                // Анализируем аудио файл для waveform, если еще не проанализирован
+                if !self.waveform_cache.contains_key(&msg.id) {
+                    log::info!("Анализируем waveform для аудио сообщения {}", msg.id);
+                    match WaveformData::analyze_audio_file(audio_path) {
+                        Ok(waveform_data) => {
+                            self.waveform_cache.insert(msg.id, Arc::new(waveform_data));
+                            log::info!("Waveform успешно проанализирован для сообщения {}", msg.id);
+                        }
+                        Err(e) => {
+                            log::warn!("Не удалось проанализировать waveform для {}: {}", audio_path, e);
+                            // Продолжаем без waveform данных
+                        }
+                    }
                 }
 
                 // Инициализируем состояние аудио плеера
