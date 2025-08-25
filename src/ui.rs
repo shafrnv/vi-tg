@@ -39,7 +39,7 @@ fn draw_loading_screen(f: &mut Frame, _app: &mut App) {
     let block = Block::default()
         .title("vi-tg")
         .borders(Borders::ALL)
-        .style(Style::default().fg(Color::White));
+        .style(Style::default());
 
     let text = vec![
         Line::from(""),
@@ -209,8 +209,8 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     let message_height = 1; // базовая высота для сообщения
     let image_height = 12; // высота для изображения
     let sticker_height = 8; // высота для стикера
-    let voice_height = 5; // увеличена высота для голосового сообщения с плеером
-    let audio_height = 5; // увеличена высота для аудио сообщения с плеером
+    let voice_height = 3; // увеличена высота для голосового сообщения с плеером
+    let audio_height = 3; // увеличена высота для аудио сообщения с плеером
 
     let picker = match Picker::from_query_stdio() {
         Ok(p) => Some(p),
@@ -238,8 +238,8 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             // Разная прокрутка для разных типов медиа
             let base_start = app.messages.len().saturating_sub(visible_height);
             if is_voice_selected || is_audio_selected {
-                // Для голосовых и аудио сообщений: прокручиваем на 5 строк вниз
-                start_index = base_start + 3;
+                // Для голосовых и аудио сообщений: прокручиваем на 2 строки вниз
+                start_index = base_start + 2;
             } else {
                 // Для изображений, видео и стикеров: прокручиваем на 11 строк вниз
                 start_index = base_start + 11;
@@ -319,7 +319,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             }
             "photo" => {
                 if is_selected {
-                    draw_photo_message(f, msg, message_area, time, picker.as_ref());
+                    draw_photo_message(f, msg, message_area, time, picker.as_ref(), is_selected);
                 } else {
                     let label = "[📷 Фото — Enter: открыть]";
                     let text_content = format!("{} {}: {}", time, msg.from, label);
@@ -331,27 +331,28 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             }
             "video" => {
                 if is_selected {
-                    draw_video_message(f, msg, message_area, time, picker.as_ref());
+                    draw_video_message(f, msg, message_area, time, picker.as_ref(), is_selected);
                 } else {
-                    let (label, color) = if let Some(is_round) = msg.video_is_round {
+                    // Для невыбранных сообщений используем разделенный формат
+                    let content_text = if let Some(is_round) = msg.video_is_round {
                         if is_round {
-                            ("[🔮 Круглое видео — Enter: открыть]", Color::Magenta)
+                            "[🔮 Круглое видео — Enter: открыть]"
                         } else {
-                            ("[🎬 Видео — Enter: открыть]", Color::Green)
+                            "[🎬 Видео — Enter: открыть]"
                         }
                     } else {
-                        ("[🎬 Видео — Enter: открыть]", Color::Green)
+                        "[🎬 Видео — Enter: открыть]"
                     };
-                    let text_content = format!("{} {}: {}", time, msg.from, label);
+                    let text_content = format!("{} {}: {}", time, msg.from, content_text);
                     let text_widget = Paragraph::new(text_content)
-                        .style(Style::default().fg(color))
+                        .style(Style::default().fg(Color::White))
                         .wrap(Wrap { trim: true });
                     f.render_widget(text_widget, message_area);
                 }
             }
             "voice" => {
                 if is_selected {
-                    draw_voice_message(f, msg, message_area, time, &app.audio_player, app);
+                    draw_voice_message(f, msg, message_area, time, &app.audio_player, app, is_selected);
                 } else {
                     let duration_text = if let Some(duration) = msg.voice_duration {
                         format_duration(duration)
@@ -360,15 +361,16 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
                     };
                     let label = format!("[🎤 Голосовое — {}]", duration_text);
                     let text_content = format!("{} {}: {}", time, msg.from, label);
+
                     let text_widget = Paragraph::new(text_content)
-                        .style(Style::default().fg(Color::Red))
+                        .style(Style::default().fg(Color::White))
                         .wrap(Wrap { trim: true });
                     f.render_widget(text_widget, message_area);
                 }
             }
             "audio" => {
                 if is_selected {
-                    draw_audio_message(f, msg, message_area, time, &app.audio_player, app);
+                    draw_audio_message(f, msg, message_area, time, &app.audio_player, app, is_selected);
                 } else {
                     let duration_text = if let Some(duration) = msg.audio_duration {
                         format_duration(duration)
@@ -385,11 +387,11 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
                     } else {
                         "Аудио".to_string()
                     };
-
                     let label = format!("[🎵 {} — {}]", title_text, duration_text);
                     let text_content = format!("{} {}: {}", time, msg.from, label);
+
                     let text_widget = Paragraph::new(text_content)
-                        .style(Style::default().fg(Color::Blue))
+                        .style(Style::default().fg(Color::White))
                         .wrap(Wrap { trim: true });
                     f.render_widget(text_widget, message_area);
                 }
@@ -397,17 +399,38 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             _ => {
                 let text_content = format!("{} {}: {}", time, msg.from, msg.text);
                 let text_widget = Paragraph::new(text_content)
-                    .style(Style::default().fg(Color::White))
+                    .style(Style::default())
                     .wrap(Wrap { trim: true });
-                f.render_widget(text_widget, message_area);
+                if is_selected {
+                    let inner_area = Rect {
+                        x: message_area.x + 2,
+                        y: message_area.y,
+                        width: message_area.width,
+                        height: message_area.height,
+                    };
+                    f.render_widget(text_widget, inner_area);
+                } else {
+                    f.render_widget(text_widget, message_area);
+                }
             }
         }
 
-        // Индикатор выбора
+        // Индикатор выбора (как в списке чатов) - размещаем на строке с метаданными
         if is_selected {
-            let indicator = Rect { x: message_area.x, y: message_area.y, width: 1, height: message_area.height };
-            let block = Block::default().style(Style::default().bg(Color::Blue));
-            f.render_widget(block, indicator);
+            let indicator_text = "▶ ";
+            let indicator = Paragraph::new(indicator_text)
+                .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+
+            // Для всех сообщений метаданные находятся на первой строке области сообщения
+            let indicator_y = message_area.y;
+
+            let indicator_area = Rect {
+                x: message_area.x,
+                y: indicator_y,
+                width: 2,
+                height: 1,
+            };
+            f.render_widget(indicator, indicator_area);
         }
 
         y_offset += current_height as i32;
@@ -418,7 +441,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     let messages_block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .style(Style::default().fg(Color::White));
+        .style(Style::default());
     f.render_widget(messages_block, area);
 }
 
@@ -426,68 +449,93 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
 
 
-fn draw_photo_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, picker: Option<&Picker>) {
+fn draw_photo_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, picker: Option<&Picker>, is_selected: bool) {
     let inner_area = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
+        x: area.x + 2,
+        y: area.y,
+        width: area.width,
+        height: area.height,
     };
-
-    // Проверяем, достаточно ли места для отображения текста сверху
     let has_space_for_text = inner_area.height > 1;
 
-    let _text_area = if has_space_for_text {
-        // Метаданные сверху
-        let text_rect = Rect {
+    if has_space_for_text {
+        // Метаданные на первой строке - выделяем желтым только при выборе
+        let metadata_color = if is_selected { Color::Yellow } else { Color::White };
+        let mut photo_lines = vec![
+        Line::from(format!("{} {}:", time, msg.from)).style(Style::default().fg(metadata_color)),
+        ];
+        photo_lines.push(Line::from(format!("📷 Фото")).style(Style::default().fg(Color::Red)));
+
+        let content_widget = Paragraph::new(photo_lines)
+            .style(Style::default().fg(Color::Cyan));
+            
+        f.render_widget(content_widget, inner_area);
+
+        // Изображение после контента (с четвертой строки)
+        let image_area = Rect {
             x: inner_area.x,
-            y: inner_area.y,
+            y: inner_area.y + 1,
             width: inner_area.width,
-            height: 1,
+            height: inner_area.height.saturating_sub(2),
         };
 
-        let text_content = format!("{} {}:", time, msg.from);
-        let text_widget = Paragraph::new(text_content)
-            .style(Style::default().fg(Color::Yellow));
-        f.render_widget(text_widget, text_rect);
-
-        text_rect
-    } else {
-        // Если нет места для текста, возвращаем пустую область
-        Rect::default()
-    };
-
-    // Изображение снизу от метаданных
-    let image_area = Rect {
-        x: inner_area.x,
-        y: if has_space_for_text { inner_area.y + 1 } else { inner_area.y },
-        width: inner_area.width,
-        height: if has_space_for_text { inner_area.height.saturating_sub(1) } else { inner_area.height },
-    };
-
-    if let Some(image_path) = &msg.image_path {
-        if let Some(picker) = picker {
-            match try_display_image(image_path, picker, image_area) {
-                Ok(mut protocol) => {
-                    let image_widget = StatefulImage::new();
-                    f.render_stateful_widget(image_widget, image_area, &mut protocol);
+        if let Some(image_path) = &msg.image_path {
+            if let Some(picker) = picker {
+                match try_display_image(image_path, picker, image_area) {
+                    Ok(mut protocol) => {
+                        let image_widget = StatefulImage::new();
+                        f.render_stateful_widget(image_widget, image_area, &mut protocol);
+                    }
+                    Err(e) => {
+                        let error_text = format!("[📷 Ошибка: {}]", e);
+                        let error_widget = Paragraph::new(error_text)
+                            .style(Style::default().fg(Color::Red));
+                        f.render_widget(error_widget, image_area);
+                    }
                 }
-                Err(e) => {
-                    let error_text = format!("[📷 Ошибка: {}]", e);
-                    let error_widget = Paragraph::new(error_text)
-                        .style(Style::default().fg(Color::Red));
-                    f.render_widget(error_widget, image_area);
-                }
+            } else {
+                let placeholder = Paragraph::new("[📷 Терминал не поддерживает изображения]")
+                    .style(Style::default().fg(Color::Yellow));
+                f.render_widget(placeholder, image_area);
             }
         } else {
-            let placeholder = Paragraph::new("[📷 Терминал не поддерживает изображения]")
-                .style(Style::default().fg(Color::Yellow));
+            let placeholder = Paragraph::new("[📷 Загрузка...]")
+                .style(Style::default().fg(Color::Blue));
             f.render_widget(placeholder, image_area);
         }
     } else {
-        let placeholder = Paragraph::new("[📷 Загрузка...]")
-            .style(Style::default().fg(Color::Blue));
-        f.render_widget(placeholder, image_area);
+        // Если нет места для текста, показываем только изображение
+        let image_area = Rect {
+            x: inner_area.x,
+            y: inner_area.y,
+            width: inner_area.width,
+            height: inner_area.height,
+        };
+
+        if let Some(image_path) = &msg.image_path {
+            if let Some(picker) = picker {
+                match try_display_image(image_path, picker, image_area) {
+                    Ok(mut protocol) => {
+                        let image_widget = StatefulImage::new();
+                        f.render_stateful_widget(image_widget, image_area, &mut protocol);
+                    }
+                    Err(e) => {
+                        let error_text = format!("[📷 Ошибка: {}]", e);
+                        let error_widget = Paragraph::new(error_text)
+                            .style(Style::default().fg(Color::Red));
+                        f.render_widget(error_widget, image_area);
+                    }
+                }
+            } else {
+                let placeholder = Paragraph::new("[📷 Терминал не поддерживает изображения]")
+                    .style(Style::default().fg(Color::Yellow));
+                f.render_widget(placeholder, image_area);
+            }
+        } else {
+            let placeholder = Paragraph::new("[📷 Загрузка...]")
+                .style(Style::default().fg(Color::Blue));
+            f.render_widget(placeholder, image_area);
+        }
     }
 
     let message_block = Block::default();
@@ -710,68 +758,103 @@ fn try_display_image_full(image_path: &str, picker: &Picker) -> Result<StatefulP
     Ok(picker.new_resize_protocol(dyn_img))
 }
 
-fn draw_video_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, picker: Option<&Picker>) {
+fn draw_video_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, picker: Option<&Picker>, is_selected: bool) {
     let inner_area = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
+        x: area.x + 2,
+        y: area.y,
+        width: area.width,
+        height: area.height,
     };
 
     // Проверяем, достаточно ли места для отображения текста сверху
     let has_space_for_text = inner_area.height > 1;
 
-    let _text_area = if has_space_for_text {
-        // Метаданные сверху
-        let text_rect = Rect {
-            x: inner_area.x,
-            y: inner_area.y,
-            width: inner_area.width,
-            height: 1,
-        };
-
-        let text_content = format!("{} {}:", time, msg.from);
-        let text_widget = Paragraph::new(text_content)
-            .style(Style::default().fg(Color::Yellow));
-        f.render_widget(text_widget, text_rect);
-
-        text_rect
-    } else {
-        // Если нет места для текста, возвращаем пустую область
-        Rect::default()
-    };
-
-    // Превью видео снизу от метаданных
-    let preview_area = Rect {
-        x: inner_area.x,
-        y: if has_space_for_text { inner_area.y + 1 } else { inner_area.y },
-        width: inner_area.width,
-        height: if has_space_for_text { inner_area.height.saturating_sub(1) } else { inner_area.height },
-    };
-
-    if let Some(preview_path) = &msg.video_preview_path {
-        if let Some(picker) = picker {
-            match try_display_image(preview_path, picker, preview_area) {
-                Ok(mut protocol) => {
-                    let image_widget = StatefulImage::new();
-                    f.render_stateful_widget(image_widget, preview_area, &mut protocol);
-                }
-                Err(e) => {
-                    let error_text = format!("[🎬 Ошибка превью: {}]", e);
-                    let error_widget = Paragraph::new(error_text)
-                        .style(Style::default().fg(Color::Red));
-                    f.render_widget(error_widget, preview_area);
-                }
+    if has_space_for_text {
+        // Метаданные на первой строке - выделяем желтым только при выборе
+        let metadata_color = if is_selected { Color::Yellow } else { Color::White };
+        let mut photo_lines = vec![
+        Line::from(format!("{} {}:", time, msg.from)).style(Style::default().fg(metadata_color)),
+        ];
+        let content_text = if let Some(is_round) = msg.video_is_round {
+            if is_round {
+                "🔮 Круглое видео"
+            } else {
+                "🎬 Видео"
             }
         } else {
-            let placeholder = Paragraph::new("[🎬 Терминал не поддерживает изображения]")
-                .style(Style::default().fg(Color::Yellow));
+            "🎬 Видео"
+        };
+        photo_lines.push(Line::from(content_text));
+
+        let text_widget = Paragraph::new(photo_lines);
+
+        f.render_widget(text_widget, inner_area);
+
+        // Превью видео после контента (с четвертой строки)
+        let preview_area = Rect {
+            x: inner_area.x,
+            y: inner_area.y + 1,
+            width: inner_area.width,
+            height: inner_area.height.saturating_sub(2),
+        };
+
+        if let Some(preview_path) = &msg.video_preview_path {
+            if let Some(picker) = picker {
+                match try_display_image(preview_path, picker, preview_area) {
+                    Ok(mut protocol) => {
+                        let image_widget = StatefulImage::new();
+                        f.render_stateful_widget(image_widget, preview_area, &mut protocol);
+                    }
+                    Err(e) => {
+                        let error_text = format!("[🎬 Ошибка превью: {}]", e);
+                        let error_widget = Paragraph::new(error_text)
+                            .style(Style::default().fg(Color::Red));
+                        f.render_widget(error_widget, preview_area);
+                    }
+                }
+            } else {
+                let placeholder = Paragraph::new("[🎬 Терминал не поддерживает изображения]")
+                    .style(Style::default().fg(Color::Yellow));
+                f.render_widget(placeholder, preview_area);
+            }
+        } else {
+            let placeholder = Paragraph::new("[🎬 Загрузка превью...]")
+                .style(Style::default().fg(Color::Blue));
             f.render_widget(placeholder, preview_area);
         }
     } else {
-        let placeholder = Paragraph::new("[🎬 Загрузка превью...]")
-            .style(Style::default().fg(Color::Blue));
-        f.render_widget(placeholder, preview_area);
+        // Если нет места для текста, показываем только превью видео
+        let preview_area = Rect {
+            x: inner_area.x,
+            y: inner_area.y,
+            width: inner_area.width,
+            height: inner_area.height,
+        };
+
+        if let Some(preview_path) = &msg.video_preview_path {
+            if let Some(picker) = picker {
+                match try_display_image(preview_path, picker, preview_area) {
+                    Ok(mut protocol) => {
+                        let image_widget = StatefulImage::new();
+                        f.render_stateful_widget(image_widget, preview_area, &mut protocol);
+                    }
+                    Err(e) => {
+                        let error_text = format!("[🎬 Ошибка превью: {}]", e);
+                        let error_widget = Paragraph::new(error_text)
+                            .style(Style::default().fg(Color::Red));
+                        f.render_widget(error_widget, preview_area);
+                    }
+                }
+            } else {
+                let placeholder = Paragraph::new("[🎬 Терминал не поддерживает изображения]")
+                    .style(Style::default().fg(Color::Yellow));
+                f.render_widget(placeholder, preview_area);
+            }
+        } else {
+            let placeholder = Paragraph::new("[🎬 Загрузка превью...]")
+                .style(Style::default().fg(Color::Blue));
+            f.render_widget(placeholder, preview_area);
+        }
     }
 
     let message_block = Block::default();
@@ -780,41 +863,28 @@ fn draw_video_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
 
 fn draw_sticker_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, picker: Option<&Picker>) {
     let inner_area = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
+        x: area.x + 2,
+        y: area.y,
+        width: area.width,
+        height: area.height,
     };
 
     // Проверяем, достаточно ли места для отображения текста сверху
     let has_space_for_text = inner_area.height > 1;
 
     let _text_area = if has_space_for_text {
-        // Метаданные сверху
-        let text_rect = Rect {
-            x: inner_area.x,
-            y: inner_area.y,
-            width: inner_area.width,
-            height: 1,
-        };
-
         let text_content = format!("{} {}:", time, msg.from);
         let text_widget = Paragraph::new(text_content)
             .style(Style::default().fg(Color::Yellow));
-        f.render_widget(text_widget, text_rect);
-
-        text_rect
-    } else {
-        // Если нет места для текста, возвращаем пустую область
-        Rect::default()
+        f.render_widget(text_widget, inner_area);
     };
 
-    // Стикер снизу от метаданных
+    // Стикер сразу после метаданных (убираем пустую строку)
     let sticker_area = Rect {
         x: inner_area.x,
         y: if has_space_for_text { inner_area.y + 1 } else { inner_area.y },
         width: inner_area.width,
-        height: if has_space_for_text { inner_area.height.saturating_sub(1) } else { inner_area.height },
+        height: if has_space_for_text { inner_area.height } else { inner_area.height },
     };
 
     if let Some(sticker_path) = &msg.sticker_path {
@@ -920,43 +990,13 @@ fn draw_video_preview(f: &mut Frame, app: &App) {
     f.render_widget(hint, hint_area);
 }
 
-fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer, app: &crate::App) {
+fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer, _app: &crate::App, is_selected: bool) {
+
     let inner_area = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
-    };
-
-    // Проверяем, достаточно ли места для отображения текста сверху
-    let has_space_for_text = inner_area.height > 1;
-
-    let _text_area = if has_space_for_text {
-        // Метаданные сверху
-        let text_rect = Rect {
-            x: inner_area.x,
-            y: inner_area.y,
-            width: inner_area.width,
-            height: 1,
-        };
-
-        let text_content = format!("{} {}:", time, msg.from);
-        let text_widget = Paragraph::new(text_content)
-            .style(Style::default().fg(Color::Yellow));
-        f.render_widget(text_widget, text_rect);
-
-        text_rect
-    } else {
-        // Если нет места для текста, возвращаем пустую область
-        Rect::default()
-    };
-
-    // Область для голосового сообщения
-    let voice_area = Rect {
-        x: inner_area.x,
-        y: if has_space_for_text { inner_area.y + 1 } else { inner_area.y },
-        width: inner_area.width,
-        height: if has_space_for_text { inner_area.height.saturating_sub(1) } else { inner_area.height },
+        x: area.x + 2,
+        y: area.y,
+        width: area.width,
+        height: area.height,
     };
 
     // Создаем визуализацию голосового сообщения
@@ -969,12 +1009,15 @@ fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
     // Проверяем, является ли это текущее проигрываемое сообщение
     let is_current = audio_player.is_current_message(msg.id);
 
-    // Создаем простой дизайн без волновой формы
+    // Создаем дизайн с разделенными метаданными и контентом
+    // Метаданные на первой строке - выделяем желтым только при выборе
+    let metadata_color = if is_selected { Color::Yellow } else { Color::White };
     let mut voice_lines = vec![
-        Line::from(format!("🎤 Голосовое сообщение — {}", duration_display)).style(Style::default().fg(Color::Red)),
+        Line::from(format!("{} {}:", time, msg.from)).style(Style::default().fg(metadata_color)),
     ];
-
-    // Добавляем строку с временем и элементами управления
+    // Контент на отдельной строке
+    voice_lines.push(Line::from(format!("🎤 Голосовое сообщение — {}", duration_display)).style(Style::default().fg(Color::Red)));
+    // Добавляем строку с элементами управления
     if is_current {
         let time_display = audio_player.get_current_time_display();
         let play_pause = if audio_player.is_playing { "⏸" } else { "▶" };
@@ -985,51 +1028,18 @@ fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
     }
 
     let voice_widget = Paragraph::new(voice_lines)
-        .style(Style::default().fg(Color::White))
         .wrap(Wrap { trim: true });
 
-    f.render_widget(voice_widget, voice_area);
+    f.render_widget(voice_widget, inner_area);
 }
 
-fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer, app: &crate::App) {
+fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer, _app: &crate::App, is_selected: bool) {
     let inner_area = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
+        x: area.x + 2,
+        y: area.y,
+        width: area.width,
+        height: area.height,
     };
-
-    // Проверяем, достаточно ли места для отображения текста сверху
-    let has_space_for_text = inner_area.height > 1;
-
-    let _text_area = if has_space_for_text {
-        // Метаданные сверху
-        let text_rect = Rect {
-            x: inner_area.x,
-            y: inner_area.y,
-            width: inner_area.width,
-            height: 1,
-        };
-
-        let text_content = format!("{} {}:", time, msg.from);
-        let text_widget = Paragraph::new(text_content)
-            .style(Style::default().fg(Color::Yellow));
-        f.render_widget(text_widget, text_rect);
-
-        text_rect
-    } else {
-        // Если нет места для текста, возвращаем пустую область
-        Rect::default()
-    };
-
-    // Область для аудио сообщения
-    let audio_area = Rect {
-        x: inner_area.x,
-        y: if has_space_for_text { inner_area.y + 1 } else { inner_area.y },
-        width: inner_area.width,
-        height: if has_space_for_text { inner_area.height.saturating_sub(1) } else { inner_area.height },
-    };
-
     // Создаем визуализацию аудио сообщения
     let duration_display = if let Some(duration) = msg.audio_duration {
         format_duration(duration)
@@ -1051,11 +1061,14 @@ fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
     // Проверяем, является ли это текущее проигрываемое сообщение
     let is_current = audio_player.is_current_message(msg.id);
 
-    // Создаем простой дизайн без волновой формы
+    // Создаем дизайн с разделенными метаданными и контентом
+    // Метаданные на первой строке - выделяем желтым только при выборе
+    let metadata_color = if is_selected { Color::Yellow } else { Color::White };
     let mut audio_lines = vec![
-        Line::from(format!("🎵 {} — {}", title_text, duration_display)).style(Style::default().fg(Color::Blue)),
+        Line::from(format!("{} {}:", time, msg.from)).style(Style::default().fg(metadata_color)),
     ];
-
+    // Контент на отдельной строке
+    audio_lines.push(Line::from(format!("🎵 {} — {}", title_text, duration_display)).style(Style::default().fg(Color::Blue)));
     // Добавляем строку с временем и элементами управления
     if is_current {
         let time_display = audio_player.get_current_time_display();
@@ -1067,8 +1080,7 @@ fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
     }
 
     let audio_widget = Paragraph::new(audio_lines)
-        .style(Style::default().fg(Color::White))
         .wrap(Wrap { trim: true });
 
-    f.render_widget(audio_widget, audio_area);
+    f.render_widget(audio_widget, inner_area);
 }
