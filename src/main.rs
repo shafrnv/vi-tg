@@ -38,6 +38,11 @@ pub struct Message {
     pub voice_id: Option<i64>,
     pub voice_path: Option<String>,
     pub voice_duration: Option<i32>,
+    pub audio_id: Option<i64>,
+    pub audio_path: Option<String>,
+    pub audio_duration: Option<i32>,
+    pub audio_title: Option<String>,
+    pub audio_artist: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -704,6 +704,13 @@ impl App {
                     log::error!("Ошибка воспроизведения голосового сообщения: {}", e);
                     self.show_error(&format!("Ошибка воспроизведения голосового сообщения: {}", e));
                 }
+            } else if msg.r#type == "audio" {
+                log::info!("Воспроизводим аудио сообщение");
+                log::info!("Проверяем audio_path: {:?}", msg.audio_path);
+                if let Err(e) = self.play_audio() {
+                    log::error!("Ошибка воспроизведения аудио сообщения: {}", e);
+                    self.show_error(&format!("Ошибка воспроизведения аудио сообщения: {}", e));
+                }
             } else {
                 log::info!("Неизвестный тип сообщения: {}", msg.r#type);
             }
@@ -724,60 +731,92 @@ impl App {
     }
 
     pub fn play_video(&mut self) -> Result<()> {
-        // Get the actual video file path from the current message
-        if let Some(msg) = self.messages.get(self.selected_message_index) {
-            if let Some(video_path) = &msg.video_path {
-                log::info!("Пытаемся воспроизвести видео: {}", video_path);
-
-                // Проверяем, существует ли файл
-                if !std::path::Path::new(video_path).exists() {
-                    return Err(anyhow::anyhow!("Файл видео не существует: {}", video_path));
-                }
-
-                // Пробуем получить ID окна терминала для overlay
-                let window_id = self.get_terminal_window_id();
-                log::info!("ID окна терминала: {:?}", window_id);
-
-                let mut cmd = std::process::Command::new("mpv");
-                cmd.arg("--no-terminal")       // Не использовать терминал для вывода
-                   .arg("--input-ipc-server=/tmp/mpv-socket"); // IPC сокет для управления
-
-                if let Some(wid) = window_id {
-                    // Если удалось получить ID окна, используем overlay режим
-                    log::info!("Используем overlay режим с wid: {}", wid);
-                    cmd.arg("--wid").arg(wid.to_string())
-                       .arg("--force-window=no")  // Не принудительно использовать новое окно
-                       .arg("--keep-open=no");    // Закрывать после завершения
-                } else {
-                    // Fallback: обычное окно, если не удалось получить ID
-                    log::info!("ID окна не найден, используем обычное окно");
-                    cmd.arg("--force-window=yes");
-                }
-
-                log::info!("Запускаем команду: {:?}", cmd);
-                let result = cmd.arg(video_path).spawn();
-
-                match result {
-                    Ok(child) => {
-                        log::info!("mpv успешно запущен, PID: {}", child.id());
-                        Ok(())
-                    }
-                    Err(e) => {
-                        log::error!("Не удалось запустить mpv: {}", e);
-                        Err(anyhow::anyhow!("Не удалось запустить mpv: {}", e))
-                    }
-                }
+        // Get the video file path - prefer the stored preview_video_path if available
+        // This is important for fullscreen preview mode where we have a stored path
+        let video_path = if let Some(preview_path) = &self.preview_video_path {
+            if !preview_path.is_empty() {
+                log::info!("Используем сохраненный путь к видео из превью: {}", preview_path);
+                preview_path.clone()
             } else {
-                log::error!("Путь к видео файлу не найден в сообщении");
-                return Err(anyhow::anyhow!("Путь к видео файлу не найден"));
+                // Fallback to getting path from current message
+                if let Some(msg) = self.messages.get(self.selected_message_index) {
+                    if let Some(msg_video_path) = &msg.video_path {
+                        log::info!("Используем путь к видео из текущего сообщения: {}", msg_video_path);
+                        msg_video_path.clone()
+                    } else {
+                        log::error!("Путь к видео файлу не найден в сообщении");
+                        return Err(anyhow::anyhow!("Путь к видео файлу не найден"));
+                    }
+                } else {
+                    log::error!("Сообщение не найдено по индексу {}", self.selected_message_index);
+                    return Err(anyhow::anyhow!("Сообщение не найдено"));
+                }
             }
         } else {
-            log::error!("Сообщение не найдено по индексу {}", self.selected_message_index);
-            return Err(anyhow::anyhow!("Сообщение не найдено"));
+            // No stored preview path, get from current message
+            if let Some(msg) = self.messages.get(self.selected_message_index) {
+                if let Some(msg_video_path) = &msg.video_path {
+                    log::info!("Пытаемся воспроизвести видео из сообщения: {}", msg_video_path);
+                    msg_video_path.clone()
+                } else {
+                    log::error!("Путь к видео файлу не найден в сообщении");
+                    return Err(anyhow::anyhow!("Путь к видео файлу не найден"));
+                }
+            } else {
+                log::error!("Сообщение не найдено по индексу {}", self.selected_message_index);
+                return Err(anyhow::anyhow!("Сообщение не найдено"));
+            }
+        };
+
+        log::info!("Пытаемся воспроизвести видео: {}", video_path);
+
+        // Проверяем, существует ли файл
+        if !std::path::Path::new(&video_path).exists() {
+            return Err(anyhow::anyhow!("Файл видео не существует: {}", video_path));
+        }
+
+        // Пробуем получить ID окна терминала для overlay
+        let window_id = self.get_terminal_window_id();
+        log::info!("ID окна терминала: {:?}", window_id);
+
+        let mut cmd = std::process::Command::new("mpv");
+        cmd.arg("--no-terminal")       // Не использовать терминал для вывода
+           .arg("--input-ipc-server=/tmp/mpv-socket"); // IPC сокет для управления
+
+        if let Some(wid) = window_id {
+            // Если удалось получить ID окна, используем overlay режим
+            log::info!("Используем overlay режим с wid: {}", wid);
+            cmd.arg("--wid").arg(wid.to_string())
+               .arg("--force-window=no")  // Не принудительно использовать новое окно
+               .arg("--keep-open=no");    // Закрывать после завершения
+        } else {
+            // Fallback: обычное окно, если не удалось получить ID
+            log::info!("ID окна не найден, используем обычное окно");
+            cmd.arg("--force-window=yes");
+        }
+
+        log::info!("Запускаем команду: {:?}", cmd);
+        let result = cmd.arg(&video_path).spawn();
+
+        match result {
+            Ok(child) => {
+                log::info!("mpv успешно запущен, PID: {}", child.id());
+                Ok(())
+            }
+            Err(e) => {
+                log::error!("Не удалось запустить mpv: {}", e);
+                Err(anyhow::anyhow!("Не удалось запустить mpv: {}", e))
+            }
         }
     }
 
     pub fn play_voice(&mut self) -> Result<()> {
+        // Останавливаем текущее воспроизведение, если оно есть
+        if self.audio_player.is_playing {
+            self.audio_player.stop();
+            log::info!("Остановлено предыдущее воспроизведение перед запуском нового");
+        }
+
         // Get the actual voice file path from the current message
         if let Some(msg) = self.messages.get(self.selected_message_index) {
             if let Some(voice_path) = &msg.voice_path {
@@ -867,6 +906,109 @@ impl App {
             } else {
                 log::error!("Путь к файлу голосового сообщения не найден в сообщении");
                 return Err(anyhow::anyhow!("Путь к файлу голосового сообщения не найден"));
+            }
+        } else {
+            log::error!("Сообщение не найдено по индексу {}", self.selected_message_index);
+            return Err(anyhow::anyhow!("Сообщение не найдено"));
+        }
+    }
+
+    pub fn play_audio(&mut self) -> Result<()> {
+        // Останавливаем текущее воспроизведение, если оно есть
+        if self.audio_player.is_playing {
+            self.audio_player.stop();
+            log::info!("Остановлено предыдущее воспроизведение перед запуском нового");
+        }
+
+        // Get the actual audio file path from the current message
+        if let Some(msg) = self.messages.get(self.selected_message_index) {
+            if let Some(audio_path) = &msg.audio_path {
+                log::info!("Пытаемся воспроизвести аудио сообщение: {}", audio_path);
+
+                // Проверяем, существует ли файл
+                if !std::path::Path::new(audio_path).exists() {
+                    return Err(anyhow::anyhow!("Файл аудио сообщения не существует: {}", audio_path));
+                }
+
+                // Проверяем, является ли это то же самое сообщение, что уже играет
+                if self.audio_player.is_current_message(msg.id) && self.audio_player.is_playing {
+                    // Останавливаем текущее воспроизведение
+                    self.audio_player.stop();
+                    log::info!("Остановлено воспроизведение аудио сообщения");
+                    return Ok(());
+                }
+
+                // Инициализируем состояние аудио плеера
+                self.audio_player.current_message_id = Some(msg.id);
+                self.audio_player.current_position = Duration::ZERO;
+                self.audio_player.total_duration = msg.audio_duration.map(|d| Duration::from_secs(d as u64));
+                self.audio_player.is_playing = true;
+                self.audio_player.current_file_path = Some(audio_path.clone()); // Store file path for restart functionality
+
+                // Пробуем разные плееры для воспроизведения аудио с усилением громкости
+                // ffplay как основной (работает надежно), mpv как запасной
+                let audio_players = vec![
+                    ("ffplay", vec!["-nodisp", "-autoexit", "-af", "volume=10"]),
+                    ("mpv", vec![
+                        "--volume=200",
+                        "--input-ipc-server=/tmp/mpv-socket",
+                        "--input-ipc-server=/tmp/mpv-socket:rw"  // Явно указываем права на чтение/запись
+                    ]), // Для перемотки
+                    ("mplayer", vec!["-really-quiet", "-noconsolecontrols", "-af", "volume=10"]),
+                    ("play", vec!["-v", "10"]), // SoX play with 10x volume boost
+                    ("paplay", vec![]), // PulseAudio player (no volume control)
+                ];
+
+                for (player, args) in audio_players {
+                    log::info!("Пробуем плеер: {}", player);
+
+                    let mut cmd = std::process::Command::new(player);
+                    for arg in &args {
+                        cmd.arg(arg);
+                    }
+                    cmd.arg(audio_path);
+
+                    // Подавляем вывод для ffplay и других плееров
+                    if player == "ffplay" {
+                        cmd.stdout(std::process::Stdio::null())
+                           .stderr(std::process::Stdio::null());
+                    } else if player == "mplayer" {
+                        cmd.stdout(std::process::Stdio::null())
+                           .stderr(std::process::Stdio::null());
+                    } else if player == "mpv" {
+                        cmd.stdout(std::process::Stdio::null())
+                           .stderr(std::process::Stdio::null());
+                    } else if player == "play" {
+                        cmd.stdout(std::process::Stdio::null())
+                           .stderr(std::process::Stdio::null());
+                    }
+
+                    log::info!("Запускаем команду: {:?}", cmd);
+                    let result = cmd.spawn();
+
+                    match result {
+                        Ok(child) => {
+                            log::info!("{} успешно запущен, PID: {}", player, child.id());
+                            self.audio_player.process_id = Some(child.id() as u32);
+                            // Устанавливаем время начала воспроизведения
+                            self.audio_start_time = Some(Instant::now());
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            log::warn!("Не удалось запустить {}: {}", player, e);
+                            continue;
+                        }
+                    }
+                }
+
+                // Если ни один плеер не сработал
+                log::error!("Не удалось найти подходящий аудио плеер");
+                self.audio_player.is_playing = false;
+                self.audio_player.current_message_id = None;
+                Err(anyhow::anyhow!("Не удалось найти подходящий аудио плеер. Установите mpv, ffplay, mplayer, sox или alsa-utils"))
+            } else {
+                log::error!("Путь к файлу аудио сообщения не найден в сообщении");
+                return Err(anyhow::anyhow!("Путь к файлу аудио сообщения не найден"));
             }
         } else {
             log::error!("Сообщение не найдено по индексу {}", self.selected_message_index);

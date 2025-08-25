@@ -50,7 +50,7 @@ type Message struct {
 	From             string
 	Timestamp        time.Time
 	ChatID           int64
-	Type             string // "text", "sticker", "photo", "video", "voice", etc.
+	Type             string // "text", "sticker", "photo", "video", "voice", "audio", etc.
 	StickerID        int64  // ID стикера если Type == "sticker"
 	StickerEmoji     string // Эмодзи стикера
 	StickerPath      string // Путь к файлу стикера (если скачан)
@@ -61,6 +61,11 @@ type Message struct {
 	VoiceID          int64  // ID голосового сообщения если Type == "voice"
 	VoicePath        string // Путь к файлу голосового сообщения (если скачан)
 	VoiceDuration    int    // Длительность голосового сообщения в секундах
+	AudioID          int64  // ID аудио файла если Type == "audio"
+	AudioPath        string // Путь к файлу аудио (если скачан)
+	AudioDuration    int    // Длительность аудио файла в секундах
+	AudioTitle       string // Название аудио файла
+	AudioArtist      string // Исполнитель аудио файла
 }
 
 // --- Кастомный UserAuthenticator для авторизации ---
@@ -485,6 +490,11 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 	voiceID := int64(0)
 	voicePath := ""
 	voiceDuration := 0
+	audioID := int64(0)
+	audioPath := ""
+	audioDuration := 0
+	audioTitle := ""
+	audioArtist := ""
 
 	debugLog("Обрабатываем сообщение %d, медиа: %v", message.ID, message.Media != nil)
 
@@ -529,11 +539,14 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 							break
 						}
 						if audioAttr, ok := attr.(*tg.DocumentAttributeAudio); ok {
+							debugLog("Обнаружен аудио атрибут для сообщения %d: Voice=%v, Duration=%d, Title='%s', Performer='%s'",
+								message.ID, audioAttr.Voice, audioAttr.Duration, audioAttr.Title, audioAttr.Performer)
 							if audioAttr.Voice {
 								isVoice = true
 								msgType = "voice"
 								voiceID = doc.ID
 								voiceDuration = int(audioAttr.Duration)
+								debugLog("Голосовое сообщение %d: длительность=%d секунд", message.ID, voiceDuration)
 								debugLog("Начинаем скачивание голосового сообщения для сообщения %d, Document ID: %d", message.ID, doc.ID)
 								voicePath = downloadVoiceFile(m.api, doc, message.ID)
 								if voicePath == "" {
@@ -541,6 +554,24 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 								} else {
 									debugLog("Голосовое сообщение для сообщения %d скачано: %s", message.ID, voicePath)
 								}
+								break
+							} else {
+								// Это обычный аудио файл (не голосовое сообщение)
+								msgType = "audio"
+								audioID = doc.ID
+								audioDuration = int(audioAttr.Duration)
+								audioTitle = audioAttr.Title
+								audioArtist = audioAttr.Performer
+								debugLog("Аудио файл %d: длительность=%d секунд, название='%s', исполнитель='%s'",
+									message.ID, audioDuration, audioTitle, audioArtist)
+								debugLog("Начинаем скачивание аудио файла для сообщения %d, Document ID: %d", message.ID, doc.ID)
+								audioPath = downloadAudioFile(m.api, doc, message.ID)
+								if audioPath == "" {
+									debugLog("Не удалось скачать аудио файл для сообщения %d", message.ID)
+								} else {
+									debugLog("Аудио файл для сообщения %d скачано: %s", message.ID, audioPath)
+								}
+
 								break
 							}
 						}
@@ -568,7 +599,7 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 		debugLog("Сообщение %d не содержит медиа", message.ID)
 	}
 
-	return Message{
+	result := Message{
 		ID:               int(message.ID),
 		Text:             message.Message,
 		From:             fromName,
@@ -586,6 +617,17 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 		VoicePath:        voicePath,
 		VoiceDuration:    voiceDuration,
 	}
+
+	// Если это аудио сообщение, присваиваем значения аудио полям
+	if msgType == "audio" {
+		result.AudioID = audioID
+		result.AudioPath = audioPath
+		result.AudioDuration = audioDuration
+		result.AudioTitle = audioTitle
+		result.AudioArtist = audioArtist
+	}
+
+	return result
 }
 
 func (m *MTProtoClient) GetMessages(ctx context.Context, peerID int64, limit int) ([]Message, error) {
@@ -1625,5 +1667,166 @@ func downloadVoiceFile(api *tg.Client, doc *tg.Document, messageID int) string {
 	}
 
 	debugLog("Голосовой файл успешно сохранен как %s", fileName)
+	return fileName
+}
+
+// downloadAudioFile скачивает аудио файл
+func downloadAudioFile(api *tg.Client, doc *tg.Document, messageID int) string {
+	if api == nil || doc == nil {
+		debugLog("API или документ nil для аудио сообщения %d", messageID)
+		return ""
+	}
+
+	debugLog("Начинаем скачивание аудио файла для сообщения %d, Document ID: %d", messageID, doc.ID)
+
+	// Определяем расширение на основе MIME типа или атрибутов
+	ext := ".mp3" // Аудио файлы обычно в формате MP3
+	for _, attr := range doc.Attributes {
+		if filename, ok := attr.(*tg.DocumentAttributeFilename); ok {
+			// Извлекаем расширение из имени файла
+			if strings.Contains(filename.FileName, ".") {
+				fileExt := filepath.Ext(filename.FileName)
+				if fileExt != "" {
+					ext = fileExt
+				}
+			}
+		}
+	}
+
+	// Проверяем, не скачан ли уже файл
+	possibleExtensions := []string{".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac"}
+	for _, testExt := range possibleExtensions {
+		existingPath := fmt.Sprintf("/tmp/vi-tg_audio_%d%s", messageID, testExt)
+		if _, err := os.Stat(existingPath); err == nil {
+			debugLog("Аудио файл уже существует: %s", existingPath)
+			return existingPath
+		}
+	}
+
+	// Путь для сохранения
+	fileName := fmt.Sprintf("/tmp/vi-tg_audio_%d%s", messageID, ext)
+	debugLog("Сохраняем аудио файл как: %s", fileName)
+
+	// Создаем файл
+	f, err := os.Create(fileName)
+	if err != nil {
+		debugLog("Ошибка создания файла %s: %v", fileName, err)
+		return ""
+	}
+	defer f.Close()
+
+	// Скачиваем файл по частям
+	offset := int64(0)
+	chunkSize := int(512 * 1024) // 512KB чанки для аудио файлов
+	totalBytes := int64(0)
+	finished := false
+	chunkCount := 0
+
+	debugLog("Начинаем скачивание аудио файла по частям")
+
+	for !finished {
+		chunkCount++
+		debugLog("Скачиваем чанк %d, offset: %d", chunkCount, offset)
+
+		resp, err := api.UploadGetFile(context.Background(), &tg.UploadGetFileRequest{
+			Precise:      true,
+			CDNSupported: false, // Отключаем CDN поддержку
+			Location: &tg.InputDocumentFileLocation{
+				ID:            doc.ID,
+				AccessHash:    doc.AccessHash,
+				FileReference: doc.FileReference,
+			},
+			Offset: offset,
+			Limit:  chunkSize,
+		})
+
+		if err != nil {
+			debugLog("Ошибка скачивания аудио файла для сообщения %d: %v", messageID, err)
+			os.Remove(fileName)
+			return ""
+		}
+
+		// Обработка ответа
+		switch file := resp.(type) {
+		case *tg.UploadFile:
+			if len(file.Bytes) == 0 {
+				// Файл скачан полностью
+				debugLog("Получен пустой чанк, аудио файл скачан полностью")
+				finished = true
+			} else {
+				// Записываем чанк в файл
+				if _, err := f.Write(file.Bytes); err != nil {
+					debugLog("Ошибка записи чанка в аудио файл: %v", err)
+					os.Remove(fileName)
+					return ""
+				}
+				offset += int64(len(file.Bytes))
+				totalBytes += int64(len(file.Bytes))
+				debugLog("Записан чанк %d, размер: %d байт, общий размер: %d байт", chunkCount, len(file.Bytes), totalBytes)
+
+				// Если получили меньше данных чем запросили, значит файл закончился
+				if len(file.Bytes) < chunkSize {
+					debugLog("Получен последний чанк, аудио файл закончен")
+					finished = true
+				}
+			}
+		case *tg.UploadFileCDNRedirect:
+			debugLog("Получен CDN редирект для аудио файла")
+			// Скачиваем файл через CDN
+			cdnResp, err := api.UploadGetCDNFile(context.Background(), &tg.UploadGetCDNFileRequest{
+				FileToken: file.FileToken,
+				Offset:    offset,
+				Limit:     chunkSize,
+			})
+			if err != nil {
+				debugLog("Ошибка скачивания аудио файла через CDN: %v", err)
+				os.Remove(fileName)
+				return ""
+			}
+
+			switch cdnData := cdnResp.(type) {
+			case *tg.UploadCDNFile:
+				if len(cdnData.Bytes) == 0 {
+					debugLog("Получен пустой CDN чанк, аудио файл скачан полностью")
+					finished = true
+				} else {
+					// Записываем чанк в файл
+					if _, err := f.Write(cdnData.Bytes); err != nil {
+						debugLog("Ошибка записи CDN чанка в аудио файл: %v", err)
+						os.Remove(fileName)
+						return ""
+					}
+					offset += int64(len(cdnData.Bytes))
+					totalBytes += int64(len(cdnData.Bytes))
+					debugLog("Записан CDN чанк %d, размер: %d байт, общий размер: %d байт", chunkCount, len(cdnData.Bytes), totalBytes)
+
+					// Если получили меньше данных чем запросили, значит файл закончился
+					if len(cdnData.Bytes) < chunkSize {
+						debugLog("Получен последний CDN чанк, аудио файл закончен")
+						finished = true
+					}
+				}
+			default:
+				debugLog("Неожиданный тип CDN ответа: %T", cdnResp)
+				os.Remove(fileName)
+				return ""
+			}
+		default:
+			debugLog("Неожиданный тип ответа: %T", resp)
+			os.Remove(fileName)
+			return ""
+		}
+	}
+
+	debugLog("Скачивание аудио файла завершено, общий размер: %d байт", totalBytes)
+
+	// Проверяем, что файл не пустой
+	if info, err := os.Stat(fileName); err != nil || info.Size() == 0 {
+		debugLog("Аудио файл пустой или не существует: %v", err)
+		os.Remove(fileName)
+		return ""
+	}
+
+	debugLog("Аудио файл успешно сохранен как %s", fileName)
 	return fileName
 }

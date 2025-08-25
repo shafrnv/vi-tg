@@ -91,6 +91,11 @@ type MessageResponse struct {
 	VoiceID          *int64  `json:"voice_id"`
 	VoicePath        *string `json:"voice_path"`
 	VoiceDuration    *int    `json:"voice_duration"`
+	AudioID          *int64  `json:"audio_id"`
+	AudioPath        *string `json:"audio_path"`
+	AudioDuration    *int    `json:"audio_duration"`
+	AudioTitle       *string `json:"audio_title"`
+	AudioArtist      *string `json:"audio_artist"`
 }
 
 type MessagesResponse struct {
@@ -149,6 +154,9 @@ func (s *APIServer) Start() error {
 
 	// Voice endpoints
 	api.HandleFunc("/voices/{voice_id}", s.getVoice).Methods("GET")
+
+	// Audio endpoints
+	api.HandleFunc("/audios/{audio_id}", s.getAudio).Methods("GET")
 
 	// Health check
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -440,6 +448,37 @@ func (s *APIServer) getMessages(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Add support for audio paths
+		if msg.Type == "audio" {
+			audioID := int64(msg.ID)
+			// Всегда устанавливаем AudioID для аудио сообщений
+			msgResponse.AudioID = &audioID
+
+			// Проверяем различные форматы аудио файлов
+			audioExtensions := []string{".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac"}
+			for _, ext := range audioExtensions {
+				audioPath := fmt.Sprintf("/tmp/vi-tg_audio_%d%s", audioID, ext)
+				if _, err := os.Stat(audioPath); err == nil {
+					msgResponse.AudioPath = &audioPath
+					break
+				}
+			}
+
+			// Устанавливаем длительность аудио файла
+			if msg.AudioDuration > 0 {
+				msgResponse.AudioDuration = &msg.AudioDuration
+			}
+
+			// Устанавливаем метаданные аудио файла
+			if msg.AudioTitle != "" {
+				msgResponse.AudioTitle = &msg.AudioTitle
+			}
+
+			if msg.AudioArtist != "" {
+				msgResponse.AudioArtist = &msg.AudioArtist
+			}
+		}
+
 		messageResponses = append(messageResponses, msgResponse)
 	}
 
@@ -695,6 +734,66 @@ func (s *APIServer) getVoice(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(voicePath)
 	if err != nil {
 		s.sendError(w, "Ошибка чтения файла голосового сообщения", http.StatusInternalServerError)
+		return
+	}
+
+	// Устанавливаем заголовки
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+
+	// Отправляем данные
+	w.Write(data)
+}
+
+func (s *APIServer) getAudio(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	audioIDStr := vars["audio_id"]
+	audioID, err := strconv.ParseInt(audioIDStr, 10, 64)
+	if err != nil {
+		s.sendError(w, "Неверный ID аудио сообщения", http.StatusBadRequest)
+		return
+	}
+
+	// Ищем файл аудио сообщения с различными расширениями
+	audioExtensions := []string{".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac"}
+	var audioPath string
+	var contentType string
+
+	for _, ext := range audioExtensions {
+		testPath := fmt.Sprintf("/tmp/vi-tg_audio_%d%s", audioID, ext)
+		if _, err := os.Stat(testPath); err == nil {
+			audioPath = testPath
+			// Определяем MIME тип на основе расширения
+			switch ext {
+			case ".mp3":
+				contentType = "audio/mpeg"
+			case ".m4a":
+				contentType = "audio/mp4"
+			case ".aac":
+				contentType = "audio/aac"
+			case ".wav":
+				contentType = "audio/wav"
+			case ".ogg":
+				contentType = "audio/ogg"
+			case ".flac":
+				contentType = "audio/flac"
+			default:
+				contentType = "audio/mpeg"
+			}
+			break
+		}
+	}
+
+	if audioPath == "" {
+		s.sendError(w, "Аудио сообщение не найдено", http.StatusNotFound)
+		return
+	}
+
+	// Читаем файл
+	data, err := os.ReadFile(audioPath)
+	if err != nil {
+		s.sendError(w, "Ошибка чтения файла аудио сообщения", http.StatusInternalServerError)
 		return
 	}
 

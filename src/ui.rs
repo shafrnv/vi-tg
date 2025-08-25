@@ -10,6 +10,17 @@ use std::collections::HashMap;
 
 use crate::app::{App, AppState};
 
+// Helper function to format duration: "MM:SS" for >= 60 seconds, "X сек" for < 60 seconds
+fn format_duration(duration_seconds: i32) -> String {
+    if duration_seconds >= 60 {
+        let minutes = duration_seconds / 60;
+        let seconds = duration_seconds % 60;
+        format!("{:02}:{:02}", minutes, seconds)
+    } else {
+        format!("{} сек", duration_seconds)
+    }
+}
+
 pub fn draw_ui(f: &mut Frame, app: &mut App) {
     match app.state {
         AppState::Loading => draw_loading_screen(f, app),
@@ -199,7 +210,8 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     let message_height = 1; // базовая высота для сообщения
     let image_height = 12; // высота для изображения
     let sticker_height = 8; // высота для стикера
-    let voice_height = 8; // увеличена высота для голосового сообщения с плеером
+    let voice_height = 6; // увеличена высота для голосового сообщения с плеером
+    let audio_height = 6; // увеличена высота для аудио сообщения с плеером
 
     let picker = match Picker::from_query_stdio() {
         Ok(p) => Some(p),
@@ -211,22 +223,23 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     if app.selected_message_index < app.messages.len() {
         let visible_height = inner_area.height as usize;
 
-        // Проверяем, является ли выбранное сообщение изображением, видео, стикером или голосом
+        // Проверяем, является ли выбранное сообщение изображением, видео, стикером, голосом или аудио
         let selected_msg = &app.messages[app.selected_message_index];
         let is_image_selected = app.focus_on_messages && selected_msg.r#type == "photo";
         let is_video_selected = app.focus_on_messages && selected_msg.r#type == "video";
         let is_sticker_selected = app.focus_on_messages && selected_msg.r#type == "sticker";
         let is_voice_selected = app.focus_on_messages && selected_msg.r#type == "voice";
+        let is_audio_selected = app.focus_on_messages && selected_msg.r#type == "audio";
 
         // Проверяем, находится ли изображение в последних 12 строках
         let last_message_index = app.messages.len().saturating_sub(1);
         let last_12_messages_start = last_message_index.saturating_sub(11); // 12 строк от конца
 
-        if (is_image_selected || is_video_selected || is_sticker_selected || is_voice_selected) && app.selected_message_index >= last_12_messages_start {
+        if (is_image_selected || is_video_selected || is_sticker_selected || is_voice_selected || is_audio_selected) && app.selected_message_index >= last_12_messages_start {
             // Разная прокрутка для разных типов медиа
             let base_start = app.messages.len().saturating_sub(visible_height);
-            if is_voice_selected {
-                // Для голосовых сообщений: прокручиваем на 5 строк вниз
+            if is_voice_selected || is_audio_selected {
+                // Для голосовых и аудио сообщений: прокручиваем на 5 строк вниз
                 start_index = base_start + 4;
             } else {
                 // Для изображений, видео и стикеров: прокручиваем на 11 строк вниз
@@ -271,6 +284,8 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             if is_selected { sticker_height } else { message_height }
         } else if msg.r#type == "voice" {
             if is_selected { voice_height } else { message_height }
+        } else if msg.r#type == "audio" {
+            if is_selected { audio_height } else { message_height }
         } else { message_height };
 
         // Проверяем, что область сообщения не выходит за границы
@@ -340,7 +355,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
                     draw_voice_message(f, msg, message_area, time, &app.audio_player);
                 } else {
                     let duration_text = if let Some(duration) = msg.voice_duration {
-                        format!("{} сек", duration)
+                        format_duration(duration)
                     } else {
                         "неизвестно".to_string()
                     };
@@ -348,6 +363,34 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
                     let text_content = format!("{} {}: {}", time, msg.from, label);
                     let text_widget = Paragraph::new(text_content)
                         .style(Style::default().fg(Color::Red))
+                        .wrap(Wrap { trim: true });
+                    f.render_widget(text_widget, message_area);
+                }
+            }
+            "audio" => {
+                if is_selected {
+                    draw_audio_message(f, msg, message_area, time, &app.audio_player);
+                } else {
+                    let duration_text = if let Some(duration) = msg.audio_duration {
+                        format_duration(duration)
+                    } else {
+                        "неизвестно".to_string()
+                    };
+
+                    let title_text = if let Some(title) = &msg.audio_title {
+                        if let Some(artist) = &msg.audio_artist {
+                            format!("{} - {}", artist, title)
+                        } else {
+                            title.clone()
+                        }
+                    } else {
+                        "Аудио".to_string()
+                    };
+
+                    let label = format!("[🎵 {} — {}]", title_text, duration_text);
+                    let text_content = format!("{} {}: {}", time, msg.from, label);
+                    let text_widget = Paragraph::new(text_content)
+                        .style(Style::default().fg(Color::Blue))
                         .wrap(Wrap { trim: true });
                     f.render_widget(text_widget, message_area);
                 }
@@ -918,8 +961,8 @@ fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
     };
 
     // Создаем визуализацию голосового сообщения
-    let duration_text = if let Some(duration) = msg.voice_duration {
-        format!("{} сек", duration)
+    let duration_display = if let Some(duration) = msg.voice_duration {
+        format_duration(duration)
     } else {
         "неизвестно".to_string()
     };
@@ -948,7 +991,7 @@ fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
 
     // Создаем более компактный дизайн с элементами управления
     let mut voice_lines = vec![
-        Line::from(format!("🎤 {} сек", duration_text)).style(Style::default().fg(Color::Red)),
+        Line::from(format!("🎤 {}", duration_display)).style(Style::default().fg(Color::Red)),
         Line::from(wave_display).style(Style::default().fg(Color::Cyan)),
     ];
 
@@ -967,4 +1010,106 @@ fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
         .wrap(Wrap { trim: true });
 
     f.render_widget(voice_widget, voice_area);
+}
+
+fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer) {
+    let inner_area = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    // Проверяем, достаточно ли места для отображения текста сверху
+    let has_space_for_text = inner_area.height > 1;
+
+    let _text_area = if has_space_for_text {
+        // Метаданные сверху
+        let text_rect = Rect {
+            x: inner_area.x,
+            y: inner_area.y,
+            width: inner_area.width,
+            height: 1,
+        };
+
+        let text_content = format!("{} {}:", time, msg.from);
+        let text_widget = Paragraph::new(text_content)
+            .style(Style::default().fg(Color::Yellow));
+        f.render_widget(text_widget, text_rect);
+
+        text_rect
+    } else {
+        // Если нет места для текста, возвращаем пустую область
+        Rect::default()
+    };
+
+    // Область для аудио сообщения
+    let audio_area = Rect {
+        x: inner_area.x,
+        y: if has_space_for_text { inner_area.y + 1 } else { inner_area.y },
+        width: inner_area.width,
+        height: if has_space_for_text { inner_area.height.saturating_sub(1) } else { inner_area.height },
+    };
+
+    // Создаем визуализацию аудио сообщения
+    let duration_display = if let Some(duration) = msg.audio_duration {
+        format_duration(duration)
+    } else {
+        "неизвестно".to_string()
+    };
+
+    // Получаем информацию о треке
+    let title_text = if let Some(title) = &msg.audio_title {
+        if let Some(artist) = &msg.audio_artist {
+            format!("{} - {}", artist, title)
+        } else {
+            title.clone()
+        }
+    } else {
+        "Аудио".to_string()
+    };
+
+    // Проверяем, является ли это текущее проигрываемое сообщение
+    let is_current = audio_player.is_current_message(msg.id);
+
+    // Создаем улучшенную волновую форму
+    let wave_chars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    let mut wave_display = String::new();
+
+    // Создаем волновую форму в зависимости от длительности
+    if let Some(duration) = msg.audio_duration {
+        let wave_length = (audio_area.width as usize).min(40); // Увеличиваем до 40 символов для лучшей визуализации
+        for i in 0..wave_length {
+            // Создаем более реалистичную волновую форму с вариациями
+            let base_wave = (i * duration as usize / wave_length) % wave_chars.len();
+            let variation = (i * 7 + duration as usize) % 3; // Добавляем вариации для более реалистичного вида
+            let wave_index = (base_wave + variation).min(wave_chars.len() - 1);
+            wave_display.push_str(wave_chars[wave_index]);
+        }
+    } else {
+        // Если длительность неизвестна, показываем статичную волну
+        wave_display = "▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂".to_string();
+    }
+
+    // Создаем более компактный дизайн с элементами управления
+    let mut audio_lines = vec![
+        Line::from(format!("🎵 {} — {}", title_text, duration_display)).style(Style::default().fg(Color::Blue)),
+        Line::from(wave_display).style(Style::default().fg(Color::Cyan)),
+    ];
+
+    // Добавляем строку с временем и элементами управления
+    if is_current {
+        let time_display = audio_player.get_current_time_display();
+        let play_pause = if audio_player.is_playing { "⏸" } else { "▶" };
+        let controls_line = format!("{} | {} | h: -2s | k: +2s | Esc: ✗", time_display, play_pause);
+        audio_lines.push(Line::from(controls_line).style(Style::default().fg(Color::Green)));
+    } else {
+        audio_lines.push(Line::from("Enter: ▶  Esc: ✗").style(Style::default().fg(Color::Gray)));
+    }
+
+    let audio_widget = Paragraph::new(audio_lines)
+        .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(audio_widget, audio_area);
 }
