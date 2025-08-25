@@ -6,7 +6,6 @@ use ratatui::{
     Frame,
 };
 use ratatui_image::{picker::Picker, protocol::StatefulProtocol, StatefulImage};
-use std::collections::HashMap;
 
 use crate::app::{App, AppState};
 
@@ -210,8 +209,8 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     let message_height = 1; // базовая высота для сообщения
     let image_height = 12; // высота для изображения
     let sticker_height = 8; // высота для стикера
-    let voice_height = 6; // увеличена высота для голосового сообщения с плеером
-    let audio_height = 6; // увеличена высота для аудио сообщения с плеером
+    let voice_height = 5; // увеличена высота для голосового сообщения с плеером
+    let audio_height = 5; // увеличена высота для аудио сообщения с плеером
 
     let picker = match Picker::from_query_stdio() {
         Ok(p) => Some(p),
@@ -240,7 +239,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             let base_start = app.messages.len().saturating_sub(visible_height);
             if is_voice_selected || is_audio_selected {
                 // Для голосовых и аудио сообщений: прокручиваем на 5 строк вниз
-                start_index = base_start + 4;
+                start_index = base_start + 3;
             } else {
                 // Для изображений, видео и стикеров: прокручиваем на 11 строк вниз
                 start_index = base_start + 11;
@@ -970,19 +969,9 @@ fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
     // Проверяем, является ли это текущее проигрываемое сообщение
     let is_current = audio_player.is_current_message(msg.id);
 
-    // Создаем динамическую волновую форму
-    let wave_display = if let Some(waveform_data) = app.waveform_cache.get(&msg.id) {
-        // Используем реальные данные waveform
-        create_dynamic_waveform(waveform_data, voice_area.width as usize, audio_player, is_current)
-    } else {
-        // Fallback к статичной волновой форме
-        create_static_waveform(msg.voice_duration, voice_area.width as usize)
-    };
-
-    // Создаем более компактный дизайн с элементами управления
+    // Создаем простой дизайн без волновой формы
     let mut voice_lines = vec![
-        Line::from(format!("🎤 {}", duration_display)).style(Style::default().fg(Color::Red)),
-        Line::from(wave_display).style(Style::default().fg(Color::Cyan)),
+        Line::from(format!("🎤 Голосовое сообщение — {}", duration_display)).style(Style::default().fg(Color::Red)),
     ];
 
     // Добавляем строку с временем и элементами управления
@@ -1062,19 +1051,9 @@ fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
     // Проверяем, является ли это текущее проигрываемое сообщение
     let is_current = audio_player.is_current_message(msg.id);
 
-    // Создаем динамическую волновую форму
-    let wave_display = if let Some(waveform_data) = app.waveform_cache.get(&msg.id) {
-        // Используем реальные данные waveform
-        create_dynamic_waveform(waveform_data, audio_area.width as usize, audio_player, is_current)
-    } else {
-        // Fallback к статичной волновой форме
-        create_static_waveform(msg.audio_duration, audio_area.width as usize)
-    };
-
-    // Создаем более компактный дизайн с элементами управления
+    // Создаем простой дизайн без волновой формы
     let mut audio_lines = vec![
         Line::from(format!("🎵 {} — {}", title_text, duration_display)).style(Style::default().fg(Color::Blue)),
-        Line::from(wave_display).style(Style::default().fg(Color::Cyan)),
     ];
 
     // Добавляем строку с временем и элементами управления
@@ -1092,84 +1071,4 @@ fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
         .wrap(Wrap { trim: true });
 
     f.render_widget(audio_widget, audio_area);
-}
-
-// Функция для создания динамической волновой формы с индикатором прогресса
-fn create_dynamic_waveform(waveform_data: &crate::app::WaveformData, width: usize, audio_player: &crate::app::AudioPlayer, is_current: bool) -> String {
-    if waveform_data.amplitudes.is_empty() {
-        return create_static_waveform(None, width);
-    }
-
-    let wave_chars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-    let mut result = String::new();
-
-    // Определяем позицию прогресса
-    let progress_position = if is_current && audio_player.is_playing {
-        let progress_ratio = audio_player.current_position.as_secs_f64() / waveform_data.duration.as_secs_f64();
-        (progress_ratio * (waveform_data.amplitudes.len() - 1) as f64) as usize
-    } else {
-        0
-    };
-
-    // Создаем волновую форму с индикатором прогресса
-    for i in 0..width.min(waveform_data.amplitudes.len()) {
-        let amplitude = waveform_data.amplitudes[i];
-        let char_index = (amplitude * (wave_chars.len() - 1) as f32) as usize;
-
-        let mut display_char = wave_chars[char_index];
-
-        // Добавляем индикатор прогресса
-        if is_current && i == progress_position.min(width - 1) {
-            display_char = match display_char {
-                "▁" => "▁",
-                "▂" => "▂",
-                "▃" => "▃",
-                "▄" => "▄",
-                "▅" => "▅",
-                "▆" => "▆",
-                "▇" => "▇",
-                "█" => "█",
-                _ => "█",
-            };
-        }
-
-        result.push_str(display_char);
-    }
-
-    // Заполняем оставшееся пространство, если waveform короче
-    while result.len() < width {
-        result.push('▁');
-    }
-
-    result
-}
-
-// Функция для создания статичной волновой формы (fallback)
-fn create_static_waveform(duration: Option<i32>, width: usize) -> String {
-    let wave_chars = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-    let mut result = String::new();
-
-    // Создаем волновую форму в зависимости от длительности
-    if let Some(duration) = duration {
-        for i in 0..width {
-            // Создаем более реалистичную волновую форму с вариациями
-            let base_wave = (i * duration as usize / width) % wave_chars.len();
-            let variation = (i * 7 + duration as usize) % 3; // Добавляем вариации для более реалистичного вида
-            let wave_index = (base_wave + variation).min(wave_chars.len() - 1);
-            result.push_str(wave_chars[wave_index]);
-        }
-    } else {
-        // Если длительность неизвестна, показываем статичную волну
-        let static_wave = "▂▃▄▅▆▇█▇▆▅▄▃▂▁▂▃▄▅▆▇█▇▆▅▄▃▂";
-        let pattern_len = static_wave.chars().count();
-
-        for i in 0..width {
-            let char_index = i % pattern_len;
-            if let Some(ch) = static_wave.chars().nth(char_index) {
-                result.push(ch);
-            }
-        }
-    }
-
-    result
 }
