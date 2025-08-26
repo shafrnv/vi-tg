@@ -1,160 +1,92 @@
-# API Контракт для vi-tg
+# API Contract for vi-tg
 
-## Архитектура
+## Current Endpoints
 
-- **Go Backend**: HTTP сервер на порту 8080, отвечает за авторизацию, синхронизацию с Telegram API
-- **Rust Frontend**: TUI клиент, отправляет HTTP запросы к Go бэкенду
+### Authentication
+- `GET /api/auth/status` - Get authentication status
+- `POST /api/auth/phone` - Set phone number
+- `POST /api/auth/code` - Send authentication code
 
-## Endpoints
+### Chats and Messages
+- `GET /api/chats` - Get list of chats
+- `GET /api/chats/{chat_id}/messages` - Get messages from chat
+- `POST /api/chats/{chat_id}/messages` - Send message
 
-### 1. Статус авторизации
-```
-GET /api/auth/status
-Response: {
-  "authorized": boolean,
-  "phone_number": string|null,
-  "needs_code": boolean
-}
-```
+### Media
+- `GET /api/stickers/{sticker_id}` - Download sticker
+- `GET /api/images/{image_id}` - Download image
+- `GET /api/videos/{video_id}` - Download video
+- `GET /api/voices/{voice_id}` - Download voice message
+- `GET /api/audios/{audio_id}` - Download audio message
 
-### 2. Установка номера телефона
-```
-POST /api/auth/phone
-Body: {
-  "phone": string
-}
-Response: {
-  "success": boolean,
-  "message": string,
-  "needs_code": boolean
-}
-```
+## New Endpoints for Location Support
 
-### 3. Отправка кода подтверждения
-```
-POST /api/auth/code
-Body: {
-  "code": string
-}
-Response: {
-  "success": boolean,
-  "message": string,
-  "authorized": boolean
-}
-```
+### Location
+- `GET /api/locations/{location_id}` - Get location data and static map
+- `GET /api/locations/{location_id}/map` - Get map image for location
 
-### 4. Получение списка чатов
-```
-GET /api/chats
-Response: {
-  "chats": [
-    {
-      "id": int64,
-      "title": string,
-      "type": string,
-      "unread": int,
-      "last_message": string|null
-    }
-  ]
-}
-```
+## Message Types
 
-### 5. Получение сообщений из чата
-```
-GET /api/chats/{chat_id}/messages?limit=50
-Response: {
-  "messages": [
-    {
-      "id": int,
-      "text": string,
-      "from": string,
-      "timestamp": string,
-      "chat_id": int64,
-      "type": string,
-      "sticker_id": int64|null,
-      "sticker_emoji": string|null,
-      "sticker_path": string|null
-    }
-  ]
-}
-```
+### Existing Types
+- text
+- photo
+- video
+- voice
+- audio
+- sticker
 
-### 6. Отправка сообщения
-```
-POST /api/chats/{chat_id}/messages
-Body: {
-  "text": string
-}
-Response: {
-  "success": boolean,
-  "message": string,
-  "message_id": int|null
-}
-```
+### New Types
+- location - Location messages with coordinates
+- venue - Location with venue information (name, address)
+- live_location - Live location sharing
 
-### 7. Скачивание стикера
-```
-GET /api/stickers/{sticker_id}
-Response: Binary data (image file)
-```
+## Location Message Structure
 
-## Структуры данных
-
-### Chat
 ```json
 {
-  "id": int64,
-  "title": string,
-  "type": "user|group|channel",
-  "unread": int,
-  "last_message": string|null
+  "id": 12345,
+  "text": "",
+  "from": "John Doe",
+  "timestamp": "2025-08-26T12:15:55+03:00",
+  "chat_id": 67890,
+  "type": "location",
+  "location_id": 12345,
+  "location_lat": 55.7558,
+  "location_lng": 37.6173,
+  "location_title": "Red Square",
+  "location_address": "Red Square, Moscow, Russia"
 }
 ```
 
-### Message
+## Location Data Structure
+
 ```json
 {
-  "id": int,
-  "text": string,
-  "from": string,
-  "timestamp": "2024-01-01T12:00:00Z",
-  "chat_id": int64,
-  "type": "text|sticker|photo|video|document",
-  "sticker_id": int64|null,
-  "sticker_emoji": string|null,
-  "sticker_path": string|null
+  "id": 12345,
+  "latitude": 55.7558,
+  "longitude": 37.6173,
+  "title": "Red Square",
+  "address": "Red Square, Moscow, Russia",
+  "map_image_path": "/tmp/vi-tg_location_map_12345.png"
 }
 ```
 
-### AuthStatus
-```json
-{
-  "authorized": boolean,
-  "phone_number": string|null,
-  "needs_code": boolean
-}
-```
+## Implementation Plan
 
-## Ошибки
+### Phase 1: Backend Changes
+1. Add location fields to Message structure in Go backend
+2. Update message parsing to handle location messages from Telegram API
+3. Add location endpoints for serving map images
+4. Implement static map generation (using external map service or library)
 
-Все ошибки возвращаются в формате:
-```json
-{
-  "error": string,
-  "code": int
-}
-```
+### Phase 2: Frontend Changes
+1. Add location fields to Message struct in Rust
+2. Update message display logic to show location messages
+3. Add map display functionality in TUI
+4. Handle location message interactions (open maps, etc.)
 
-HTTP статус коды:
-- 200: Успех
-- 400: Неверный запрос
-- 401: Не авторизован
-- 404: Не найдено
-- 500: Внутренняя ошибка сервера
-
-## Особенности
-
-1. **Авторизация**: Состояние авторизации хранится в Go бэкенде
-2. **Стикеры**: Скачиваются и кешируются в Go бэкенде, путь возвращается в API
-3. **Polling**: Rust фронтенд периодически опрашивает API для получения новых сообщений
-4. **Конфигурация**: Настройки хранятся в Go бэкенде 
+### Phase 3: Integration
+1. Test location message receiving
+2. Test location message display
+3. Test map image generation and display
+4. Handle edge cases (no map service, network errors, etc.)

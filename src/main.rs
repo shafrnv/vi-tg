@@ -43,6 +43,13 @@ pub struct Message {
     pub audio_duration: Option<i32>,
     pub audio_title: Option<String>,
     pub audio_artist: Option<String>,
+    // Location support fields
+    pub location_id: Option<i64>,
+    pub location_lat: Option<f64>,
+    pub location_lng: Option<f64>,
+    pub location_title: Option<String>,
+    pub location_address: Option<String>,
+    pub location_map_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -208,6 +215,9 @@ async fn run_tui(mut app: App) -> Result<()> {
                                     } else {
                                         app.close_image_preview();
                                     }
+                                } else if app.preview_image_path.is_some() {
+                                    // This might be a location map preview, just close it
+                                    app.close_image_preview();
                                 } else {
                                     app.close_image_preview();
                                 }

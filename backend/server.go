@@ -1,10 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,11 +19,11 @@ import (
 	"syscall"
 	"time"
 
-	"vi-tg/auth"
-	"vi-tg/config"
-
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
+
+	"vi-tg/auth"
+	"vi-tg/config"
 )
 
 type APIServer struct {
@@ -96,6 +102,13 @@ type MessageResponse struct {
 	AudioDuration    *int    `json:"audio_duration"`
 	AudioTitle       *string `json:"audio_title"`
 	AudioArtist      *string `json:"audio_artist"`
+	// Location support fields
+	LocationID      *int64   `json:"location_id"`
+	LocationLat     *float64 `json:"location_lat"`
+	LocationLng     *float64 `json:"location_lng"`
+	LocationTitle   *string  `json:"location_title"`
+	LocationAddress *string  `json:"location_address"`
+	LocationMapPath *string  `json:"location_map_path"`
 }
 
 type MessagesResponse struct {
@@ -157,6 +170,10 @@ func (s *APIServer) Start() error {
 
 	// Audio endpoints
 	api.HandleFunc("/audios/{audio_id}", s.getAudio).Methods("GET")
+
+	// Location endpoints
+	api.HandleFunc("/locations/{location_id}", s.getLocation).Methods("GET")
+	api.HandleFunc("/locations/{location_id}/map", s.getLocationMap).Methods("GET")
 
 	// Health check
 	r.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -477,6 +494,35 @@ func (s *APIServer) getMessages(w http.ResponseWriter, r *http.Request) {
 			if msg.AudioArtist != "" {
 				msgResponse.AudioArtist = &msg.AudioArtist
 			}
+		}
+
+		// Add support for location messages
+		if msg.Type == "location" {
+			locationID := int64(msg.ID)
+			// Всегда устанавливаем LocationID для сообщений с локацией
+			msgResponse.LocationID = &locationID
+
+			// Устанавливаем координаты если они есть
+			if msg.LocationLat != 0 {
+				msgResponse.LocationLat = &msg.LocationLat
+			}
+			if msg.LocationLng != 0 {
+				msgResponse.LocationLng = &msg.LocationLng
+			}
+
+			// Устанавливаем название локации если есть
+			if msg.LocationTitle != "" {
+				msgResponse.LocationTitle = &msg.LocationTitle
+			}
+
+			// Устанавливаем адрес локации если есть
+			if msg.LocationAddress != "" {
+				msgResponse.LocationAddress = &msg.LocationAddress
+			}
+
+			// Устанавливаем путь к карте как API endpoint (не локальный файл)
+			mapPath := fmt.Sprintf("/api/locations/%d/map", locationID)
+			msgResponse.LocationMapPath = &mapPath
 		}
 
 		messageResponses = append(messageResponses, msgResponse)
@@ -804,6 +850,296 @@ func (s *APIServer) getAudio(w http.ResponseWriter, r *http.Request) {
 
 	// Отправляем данные
 	w.Write(data)
+}
+
+func (s *APIServer) getLocation(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	locationIDStr := vars["location_id"]
+	locationID, err := strconv.ParseInt(locationIDStr, 10, 64)
+	if err != nil {
+		s.sendError(w, "Неверный ID локации", http.StatusBadRequest)
+		return
+	}
+
+	// For now, return mock location data
+	// In a real implementation, this would fetch from a database or cache
+	location := map[string]interface{}{
+		"id":        locationID,
+		"latitude":  55.7558,
+		"longitude": 37.6173,
+		"title":     "Red Square",
+		"address":   "Red Square, Moscow, Russia",
+		"map_path":  fmt.Sprintf("/tmp/vi-tg_location_map_%d.png", locationID),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(location)
+}
+
+func (s *APIServer) getLocationMap(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	locationIDStr := vars["location_id"]
+	locationID, err := strconv.ParseInt(locationIDStr, 10, 64)
+	if err != nil {
+		s.sendError(w, "Неверный ID локации", http.StatusBadRequest)
+		return
+	}
+
+	// Get coordinates from query parameters
+	latStr := r.URL.Query().Get("lat")
+	lngStr := r.URL.Query().Get("lng")
+
+	var lat, lng float64
+	if latStr != "" && lngStr != "" {
+		if parsedLat, err := strconv.ParseFloat(latStr, 64); err == nil {
+			lat = parsedLat
+		}
+		if parsedLng, err := strconv.ParseFloat(lngStr, 64); err == nil {
+			lng = parsedLng
+		}
+	}
+
+	// If no coordinates provided, use default (Red Square, Moscow)
+	if lat == 0 && lng == 0 {
+		lat = 55.7558
+		lng = 37.6173
+	}
+
+	// Ищем файл карты
+	mapPath := fmt.Sprintf("/tmp/vi-tg_location_map_%d.png", locationID)
+	if _, err := os.Stat(mapPath); err != nil {
+		// Если файл карты не существует, создаем карту с реальными координатами
+		if err := s.generateLocationMap(locationID, lat, lng, mapPath); err != nil {
+			log.Printf("Error generating map: %v", err)
+			s.sendError(w, "Ошибка генерации карты", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Читаем файл карты
+	data, err := os.ReadFile(mapPath)
+	if err != nil {
+		s.sendError(w, "Ошибка чтения файла карты", http.StatusInternalServerError)
+		return
+	}
+
+	// Устанавливаем заголовки
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+
+	// Отправляем данные
+	w.Write(data)
+}
+
+func (s *APIServer) generateLocationMap(locationID int64, lat, lng float64, mapPath string) error {
+	// Use Yandex Maps API to generate a real map image
+	// Convert coordinates to tile numbers and fetch the map tile
+
+	// Yandex Maps API configuration
+	apiKey := "2a565807-86b7-4e0a-8170-edc9f6bbc99e"
+	zoom := 15 // Good zoom level for location details
+
+	// Convert lat/lng to tile coordinates
+	x, y := s.latLngToTileNumbers(lat, lng, zoom)
+
+	// Fetch map tile from Yandex Maps API
+	tileURL := fmt.Sprintf("https://tiles.api-maps.yandex.ru/v1/tiles/?&x=%d&y=%d&z=%d&lang=ru_RU&l=map&apikey=%s",
+		x, y, zoom, apiKey)
+
+	resp, err := http.Get(tileURL)
+	if err != nil {
+		log.Printf("Error fetching map tile: %v", err)
+		return s.generateFallbackMap(lat, lng, mapPath)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Yandex Maps API returned status: %d", resp.StatusCode)
+		return s.generateFallbackMap(lat, lng, mapPath)
+	}
+
+	// Read the tile image
+	tileData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Error reading tile data: %v", err)
+		return s.generateFallbackMap(lat, lng, mapPath)
+	}
+
+	// Decode the tile image
+	tileImg, _, err := image.Decode(bytes.NewReader(tileData))
+	if err != nil {
+		log.Printf("Error decoding tile image: %v", err)
+		return s.generateFallbackMap(lat, lng, mapPath)
+	}
+
+	// Create a larger canvas for the final map
+	finalWidth := 400
+	finalHeight := 300
+	finalImg := image.NewRGBA(image.Rect(0, 0, finalWidth, finalHeight))
+
+	// Calculate position for the tile on the canvas (center it)
+	tileBounds := tileImg.Bounds()
+	tileWidth := tileBounds.Dx()
+	tileHeight := tileBounds.Dy()
+
+	tileX := (finalWidth - tileWidth) / 2
+	tileY := (finalHeight - tileHeight) / 2
+
+	// Draw the tile on the canvas
+	for y := 0; y < tileHeight; y++ {
+		for x := 0; x < tileWidth; x++ {
+			srcColor := tileImg.At(tileBounds.Min.X+x, tileBounds.Min.Y+y)
+			finalImg.Set(tileX+x, tileY+y, srcColor)
+		}
+	}
+
+	// Add a marker at the exact location
+	s.addLocationMarker(finalImg, lat, lng, zoom, x, y, tileX, tileY)
+
+	// Save the final map image
+	file, err := os.Create(mapPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	return png.Encode(file, finalImg)
+}
+
+// latLngToTileNumbers converts latitude/longitude to tile X,Y coordinates
+func (s *APIServer) latLngToTileNumbers(lat, lng float64, zoom int) (int, int) {
+	// Use proper WGS84 Mercator projection (same as JavaScript implementation)
+	e := 0.0818191908426 // WGS84 eccentricity
+
+	// Convert to radians
+	beta := lat * math.Pi / 180.0
+
+	// Calculate phi (accounts for ellipsoidal Earth)
+	phi := (1 - e*math.Sin(beta)) / (1 + e*math.Sin(beta))
+
+	// Calculate theta
+	theta := math.Tan(math.Pi/4+beta/2) * math.Pow(phi, e/2)
+
+	// Calculate pixel coordinates at zoom level
+	rho := math.Pow(2, float64(zoom)+8) / 2
+
+	xPixel := rho * (1 + lng/180)
+	yPixel := rho * (1 - math.Log(theta)/math.Pi)
+
+	// Convert to tile numbers
+	x := int(math.Floor(xPixel / 256))
+	y := int(math.Floor(yPixel / 256))
+
+	return x, y
+}
+
+// latLngToPixel converts latitude/longitude to pixel coordinates at given zoom level
+func (s *APIServer) latLngToPixel(lat, lng float64, zoom int) (float64, float64) {
+	// Use the same proper WGS84 Mercator projection as latLngToTileNumbers
+	e := 0.0818191908426 // WGS84 eccentricity
+
+	// Convert to radians
+	beta := lat * math.Pi / 180.0
+
+	// Calculate phi (accounts for ellipsoidal Earth)
+	phi := (1 - e*math.Sin(beta)) / (1 + e*math.Sin(beta))
+
+	// Calculate theta
+	theta := math.Tan(math.Pi/4+beta/2) * math.Pow(phi, e/2)
+
+	// Calculate pixel coordinates at zoom level (consistent with tile calculation)
+	rho := math.Pow(2, float64(zoom)+8) / 2
+
+	x := rho * (1 + lng/180)
+	y := rho * (1 - math.Log(theta)/math.Pi)
+
+	return x, y
+}
+
+// addLocationMarker adds a red marker at the exact location on the map
+func (s *APIServer) addLocationMarker(img *image.RGBA, lat, lng float64, zoom, tileX, tileY, offsetX, offsetY int) {
+	// Calculate pixel position within the tile
+	tilePixelX, tilePixelY := s.latLngToPixel(lat, lng, zoom)
+
+	// Calculate pixel position within this specific tile
+	pixelX := int(tilePixelX) - (tileX * 256)
+	pixelY := int(tilePixelY) - (tileY * 256)
+
+	// Position on the final image (centered tile + pixel offset)
+	markerX := offsetX + pixelX
+	markerY := offsetY + pixelY
+
+	// Draw a red circle marker
+	red := color.RGBA{255, 0, 0, 255}
+	radius := 10
+
+	for dy := -radius; dy <= radius; dy++ {
+		for dx := -radius; dx <= radius; dx++ {
+			if dx*dx+dy*dy <= radius*radius {
+				imgX := markerX + dx
+				imgY := markerY + dy
+
+				// Check bounds
+				if imgX >= 0 && imgX < img.Bounds().Dx() && imgY >= 0 && imgY < img.Bounds().Dy() {
+					img.Set(imgX, imgY, red)
+				}
+			}
+		}
+	}
+
+	// Add a small black border around the marker
+	black := color.RGBA{0, 0, 0, 255}
+	borderRadius := radius + 2
+	for dy := -borderRadius; dy <= borderRadius; dy++ {
+		for dx := -borderRadius; dx <= borderRadius; dx++ {
+			if dx*dx+dy*dy <= borderRadius*borderRadius && dx*dx+dy*dy > radius*radius {
+				imgX := markerX + dx
+				imgY := markerY + dy
+
+				// Check bounds
+				if imgX >= 0 && imgX < img.Bounds().Dx() && imgY >= 0 && imgY < img.Bounds().Dy() {
+					img.Set(imgX, imgY, black)
+				}
+			}
+		}
+	}
+}
+
+// generateFallbackMap creates a simple placeholder map when API fails
+func (s *APIServer) generateFallbackMap(lat, lng float64, mapPath string) error {
+	// Create a simple colored rectangle as a map placeholder
+	img := image.NewRGBA(image.Rect(0, 0, 400, 300))
+	blue := color.RGBA{100, 150, 200, 255}
+
+	// Fill with blue color
+	for y := 0; y < img.Bounds().Dy(); y++ {
+		for x := 0; x < img.Bounds().Dx(); x++ {
+			img.Set(x, y, blue)
+		}
+	}
+
+	// Add a simple marker (red dot)
+	centerX, centerY := 200, 150
+	markerColor := color.RGBA{255, 0, 0, 255}
+	for dy := -5; dy <= 5; dy++ {
+		for dx := -5; dx <= 5; dx++ {
+			if dx*dx+dy*dy <= 25 { // Circle
+				img.Set(centerX+dx, centerY+dy, markerColor)
+			}
+		}
+	}
+
+	// Add coordinates text (if we had a font system)
+	// For now, just save the image
+
+	file, err := os.Create(mapPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	return png.Encode(file, img)
 }
 
 func (s *APIServer) sendError(w http.ResponseWriter, message string, code int) {

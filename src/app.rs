@@ -230,6 +230,40 @@ fn format_duration(duration: Duration) -> String {
     format!("{:02}:{:02}", minutes, seconds)
 }
 
+// Standalone async function for downloading map images
+async fn download_map_image_async(url: &str, message_id: i32) -> Result<String> {
+    log::info!("Скачиваем карту с URL: {} в фоновом режиме", url);
+
+    // Create a temporary file path for the downloaded image
+    let temp_path = format!("/tmp/vi-tg_location_preview_{}.png", message_id);
+
+    // Check if we already have this image downloaded
+    if std::path::Path::new(&temp_path).exists() {
+        log::info!("Карта уже скачана, используем существующий файл: {}", temp_path);
+        return Ok(temp_path);
+    }
+
+    // Create HTTP client and download the image
+    let client = reqwest::Client::new();
+    let response = client.get(url).send().await
+        .map_err(|e| anyhow::anyhow!("Ошибка HTTP запроса: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!("HTTP ошибка: {} для URL: {}", response.status(), url));
+    }
+
+    // Read the image data
+    let image_data = response.bytes().await
+        .map_err(|e| anyhow::anyhow!("Ошибка чтения данных изображения: {}", e))?;
+
+    // Write to temporary file
+    tokio::fs::write(&temp_path, &image_data).await
+        .map_err(|e| anyhow::anyhow!("Ошибка сохранения файла: {}", e))?;
+
+    log::info!("Карта успешно скачана и сохранена в фоновом режиме: {}", temp_path);
+    Ok(temp_path)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
     Loading,
@@ -512,7 +546,6 @@ impl App {
     async fn load_messages(&mut self) -> Result<()> {
         if let Some(chat) = &self.selected_chat {
             let current_chat_id = chat.id;
-            let chat_changed = self.last_loaded_chat_id != Some(current_chat_id);
             let old_len = self.messages.len();
             let was_at_bottom = old_len > 0 && self.selected_message_index == old_len - 1;
             let old_selected_id = self.messages.get(self.selected_message_index).map(|m| m.id);
@@ -712,6 +745,17 @@ impl App {
                 if let Err(e) = self.play_audio() {
                     log::error!("Ошибка воспроизведения аудио сообщения: {}", e);
                     self.show_error(&format!("Ошибка воспроизведения аудио сообщения: {}", e));
+                }
+            } else if msg.r#type == "location" {
+                log::info!("Открываем сообщение с местоположением");
+                log::info!("Координаты: lat={:?}, lng={:?}, title: {:?}", msg.location_lat, msg.location_lng, msg.location_title);
+                log::info!("Адрес: {:?}", msg.location_address);
+                log::info!("Карта: {:?}", msg.location_map_path);
+
+                // Show location preview - this will show detailed location info
+                if let Err(e) = self.open_location() {
+                    log::error!("Ошибка открытия местоположения: {}", e);
+                    self.show_error(&format!("Ошибка открытия местоположения: {}", e));
                 }
             } else {
                 log::info!("Неизвестный тип сообщения: {}", msg.r#type);
@@ -1399,5 +1443,122 @@ impl App {
 
     pub fn get_actual_visible_capacity(&self) -> usize {
         self.visible_capacity
+    }
+
+    pub fn open_location(&mut self) -> Result<()> {
+        // Get the current location message
+        if let Some(msg) = self.messages.get(self.selected_message_index) {
+            if msg.r#type == "location" {
+                log::info!("Открываем подробную информацию о местоположении");
+
+                // Construct map URL with coordinates
+                if let (Some(lat), Some(lng)) = (msg.location_lat, msg.location_lng) {
+                    // Use the API endpoint provided by the backend
+                    let base_url = if let Some(ref map_path) = msg.location_map_path {
+                        map_path.clone()
+                    } else {
+                        format!("/api/locations/{}/map", msg.location_id.unwrap_or(msg.id as i64))
+                    };
+
+                    // Check if URL already has query parameters
+                    let separator = if base_url.contains('?') { '&' } else { '?' };
+                    let map_url = format!("{}{}lat={:.6}&lng={:.6}", base_url, separator, lat, lng);
+
+                    let full_map_url = format!("http://localhost:8080{}", map_url);
+                    log::info!("Запрашиваем карту с координатами: {} для сообщения {}", full_map_url, msg.id);
+
+                    // For now, set a placeholder path - the actual download will happen when the image is displayed
+                    let temp_path = format!("/tmp/vi-tg_location_preview_{}.png", msg.id);
+                    self.preview_image_path = Some(temp_path.clone());
+
+                    // Spawn async task to download the map image
+                    let url_clone = full_map_url.clone();
+                    let message_id = msg.id;
+                    tokio::spawn(async move {
+                        match download_map_image_async(&url_clone, message_id).await {
+                            Ok(local_path) => {
+                                log::info!("Карта успешно скачана в фоновом режиме: {}", local_path);
+                                // Note: We can't update self.preview_image_path here since we're in a different task
+                                // The UI will need to check if the file exists when trying to display it
+                            }
+                            Err(e) => {
+                                log::error!("Ошибка скачивания карты в фоновом режиме: {}", e);
+                            }
+                        }
+                    });
+                } else {
+                    // Fallback to basic map path without coordinates
+                    if let Some(ref map_path) = msg.location_map_path {
+                        let full_map_url = format!("http://localhost:8080{}", map_path);
+                        log::warn!("Координаты не найдены, используем базовый путь к карте");
+
+                        // For now, set a placeholder path
+                        let temp_path = format!("/tmp/vi-tg_location_preview_{}.png", msg.id);
+                        self.preview_image_path = Some(temp_path.clone());
+
+                        // Spawn async task to download the map image
+                        let url_clone = full_map_url.clone();
+                        let message_id = msg.id;
+                        tokio::spawn(async move {
+                            match download_map_image_async(&url_clone, message_id).await {
+                                Ok(local_path) => {
+                                    log::info!("Карта успешно скачана в фоновом режиме: {}", local_path);
+                                }
+                                Err(e) => {
+                                    log::error!("Ошибка скачивания карты в фоновом режиме: {}", e);
+                                }
+                            }
+                        });
+                    } else {
+                        log::error!("Путь к карте не найден и координаты отсутствуют");
+                        return Err(anyhow::anyhow!("Путь к карте не найден"));
+                    }
+                }
+
+                self.state = AppState::ImagePreview; // Use ImagePreview to show map if available
+
+                log::info!("Установлен режим просмотра местоположения");
+                return Ok(());
+            } else {
+                log::error!("Сообщение не является сообщением о местоположении");
+                return Err(anyhow::anyhow!("Сообщение не является сообщением о местоположении"));
+            }
+        } else {
+            log::error!("Сообщение не найдено по индексу {}", self.selected_message_index);
+            return Err(anyhow::anyhow!("Сообщение не найдено"));
+        }
+    }
+
+    async fn download_map_image(&self, url: &str, message_id: i32) -> Result<String> {
+        log::info!("Скачиваем карту с URL: {}", url);
+
+        // Create a temporary file path for the downloaded image
+        let temp_path = format!("/tmp/vi-tg_location_preview_{}.png", message_id);
+
+        // Check if we already have this image downloaded
+        if std::path::Path::new(&temp_path).exists() {
+            log::info!("Карта уже скачана, используем существующий файл: {}", temp_path);
+            return Ok(temp_path);
+        }
+
+        // Create HTTP client and download the image
+        let client = reqwest::Client::new();
+        let response = client.get(url).send().await
+            .map_err(|e| anyhow::anyhow!("Ошибка HTTP запроса: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("HTTP ошибка: {} для URL: {}", response.status(), url));
+        }
+
+        // Read the image data
+        let image_data = response.bytes().await
+            .map_err(|e| anyhow::anyhow!("Ошибка чтения данных изображения: {}", e))?;
+
+        // Write to temporary file
+        tokio::fs::write(&temp_path, &image_data).await
+            .map_err(|e| anyhow::anyhow!("Ошибка сохранения файла: {}", e))?;
+
+        log::info!("Карта успешно скачана и сохранена в: {}", temp_path);
+        Ok(temp_path)
     }
 }

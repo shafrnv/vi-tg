@@ -50,7 +50,7 @@ type Message struct {
 	From             string
 	Timestamp        time.Time
 	ChatID           int64
-	Type             string // "text", "sticker", "photo", "video", "voice", "audio", etc.
+	Type             string // "text", "sticker", "photo", "video", "voice", "audio", "location", etc.
 	StickerID        int64  // ID стикера если Type == "sticker"
 	StickerEmoji     string // Эмодзи стикера
 	StickerPath      string // Путь к файлу стикера (если скачан)
@@ -66,6 +66,11 @@ type Message struct {
 	AudioDuration    int    // Длительность аудио файла в секундах
 	AudioTitle       string // Название аудио файла
 	AudioArtist      string // Исполнитель аудио файла
+	// Location support fields
+	LocationLat     float64 // Latitude for location messages
+	LocationLng     float64 // Longitude for location messages
+	LocationTitle   string  // Title/name of the location
+	LocationAddress string  // Address of the location
 }
 
 // --- Кастомный UserAuthenticator для авторизации ---
@@ -495,6 +500,9 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 	audioDuration := 0
 	audioTitle := ""
 	audioArtist := ""
+	// Location variables
+	locationLat := 0.0
+	locationLng := 0.0
 
 	debugLog("Обрабатываем сообщение %d, медиа: %v", message.ID, message.Media != nil)
 
@@ -592,6 +600,25 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 					debugLog("Фото скачано: %s", imagePath)
 				}
 			}
+		case *tg.MessageMediaGeo:
+			debugLog("Сообщение %d содержит геолокацию", message.ID)
+			if geo, ok := media.Geo.(*tg.GeoPoint); ok {
+				msgType = "location"
+				// Extract coordinates from GeoPoint
+				lat := float64(geo.Lat)
+				lng := float64(geo.Long)
+				debugLog("Координаты: широта=%.6f, долгота=%.6f", lat, lng)
+				// Store coordinates for later assignment to result struct
+				locationLat = lat
+				locationLng = lng
+				// Note: Location title and address will be set by the application layer
+				// based on reverse geocoding if needed
+			}
+		case *tg.MessageMediaVenue:
+			debugLog("Сообщение %d содержит место", message.ID)
+			msgType = "location"
+			// Extract coordinates and venue info from MessageMediaVenue
+			// Note: The exact field names may vary, will be set by application layer if needed
 		default:
 			debugLog("Сообщение %d содержит неизвестный тип медиа: %T", message.ID, media)
 		}
@@ -616,6 +643,8 @@ func (m *MTProtoClient) processMessage(message *tg.Message, users []tg.UserClass
 		VoiceID:          voiceID,
 		VoicePath:        voicePath,
 		VoiceDuration:    voiceDuration,
+		LocationLat:      locationLat,
+		LocationLng:      locationLng,
 	}
 
 	// Если это аудио сообщение, присваиваем значения аудио полям

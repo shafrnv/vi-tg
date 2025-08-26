@@ -20,6 +20,60 @@ fn format_duration(duration_seconds: i32) -> String {
     }
 }
 
+// Helper function to format timestamp for metadata: "HH:MM"
+fn format_time_for_metadata(timestamp: &str) -> String {
+    // Parse ISO 8601 timestamp like "2025-08-25T23:26:56+03:00"
+    if let Some(time_part) = timestamp.split('T').nth(1) {
+        if let Some(hour_minute) = time_part.split(':').take(2).collect::<Vec<&str>>().join(":").split('+').next() {
+            return hour_minute.to_string();
+        }
+    }
+    // Fallback to extracting time from any format
+    if let Some(time_part) = timestamp.split(' ').last() {
+        if time_part.len() >= 5 {
+            return time_part[..5].to_string();
+        }
+    }
+    "??:??".to_string()
+}
+
+// Helper function to extract date from timestamp for grouping: "YYYY-MM-DD"
+fn extract_date_from_timestamp(timestamp: &str) -> String {
+    // Parse ISO 8601 timestamp like "2025-08-25T23:26:56+03:00"
+    if let Some(date_part) = timestamp.split('T').next() {
+        return date_part.to_string();
+    }
+    // Fallback for other formats
+    if let Some(date_part) = timestamp.split(' ').next() {
+        return date_part.to_string();
+    }
+    "????-??-??".to_string()
+}
+
+// Helper function to format date for display: "25 августа 2025"
+fn format_date_for_display(date_str: &str) -> String {
+    // Parse date like "2025-08-25"
+    let parts: Vec<&str> = date_str.split('-').collect();
+    if parts.len() == 3 {
+        if let (Ok(year), Ok(month), Ok(day)) = (
+            parts[0].parse::<i32>(),
+            parts[1].parse::<u32>(),
+            parts[2].parse::<u32>(),
+        ) {
+            let month_names = [
+                "января", "февраля", "марта", "апреля", "мая", "июня",
+                "июля", "августа", "сентября", "октября", "ноября", "декабря"
+            ];
+
+            if (1..=12).contains(&month) && (1..=31).contains(&day) {
+                return format!("{} {} {}", day, month_names[month as usize - 1], year);
+            }
+        }
+    }
+    // Fallback
+    date_str.to_string()
+}
+
 pub fn draw_ui(f: &mut Frame, app: &mut App) {
     match app.state {
         AppState::Loading => draw_loading_screen(f, app),
@@ -31,112 +85,6 @@ pub fn draw_ui(f: &mut Frame, app: &mut App) {
         AppState::ImagePreview => draw_image_preview(f, app),
         AppState::VideoPreview => draw_video_preview(f, app),
     }
-}
-
-fn draw_loading_screen(f: &mut Frame, _app: &mut App) {
-    let area = f.area();
-
-    let block = Block::default()
-        .title("vi-tg")
-        .borders(Borders::ALL)
-        .style(Style::default());
-
-    let text = vec![
-        Line::from(""),
-        Line::from("Загрузка..."),
-        Line::from(""),
-        Line::from("Проверка авторизации..."),
-    ];
-
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .wrap(Wrap { trim: true });
-
-    f.render_widget(paragraph, area);
-}
-
-fn draw_phone_input(f: &mut Frame, app: &App) {
-    let area = f.area();
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(3),
-        ])
-        .split(area);
-    
-    let title = Paragraph::new("Авторизация в Telegram")
-        .block(Block::default().borders(Borders::ALL))
-        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
-    f.render_widget(title, chunks[0]);
-    
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(chunks[1]);
-    
-    let instruction = Paragraph::new("Введите номер телефона с кодом страны (например: +7 999 123 45 67):")
-        .style(Style::default().fg(Color::White));
-    f.render_widget(instruction, main_chunks[0]);
-    
-    let input_text = format!("Номер: {}", app.phone_input);
-    let input = Paragraph::new(input_text)
-        .block(Block::default().borders(Borders::ALL).title("Ввод"))
-        .style(Style::default().fg(Color::Green));
-    f.render_widget(input, main_chunks[1]);
-    
-    let status = Paragraph::new("Enter: подтвердить | Esc: выход")
-        .style(Style::default().fg(Color::Gray));
-    f.render_widget(status, chunks[2]);
-}
-
-fn draw_code_input(f: &mut Frame, app: &App) {
-    let area = f.area();
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(3),
-        ])
-        .split(area);
-    
-    let title = Paragraph::new("Код подтверждения")
-        .block(Block::default().borders(Borders::ALL))
-        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
-    f.render_widget(title, chunks[0]);
-    
-    let main_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(chunks[1]);
-    
-    let instruction = Paragraph::new("Введите код, который был отправлен на ваш номер телефона:")
-        .style(Style::default().fg(Color::White));
-    f.render_widget(instruction, main_chunks[0]);
-    
-    let input_text = format!("Код: {} ({})", app.code_input, app.code_input.len());
-    let input = Paragraph::new(input_text)
-        .block(Block::default().borders(Borders::ALL).title("Ввод"))
-        .style(Style::default().fg(Color::Green));
-    f.render_widget(input, main_chunks[1]);
-    
-    let status = Paragraph::new("Enter: подтвердить | Esc: назад")
-        .style(Style::default().fg(Color::Gray));
-    f.render_widget(status, chunks[2]);
 }
 
 fn draw_main_screen(f: &mut Frame, app: &mut App) {
@@ -163,39 +111,6 @@ fn draw_main_screen(f: &mut Frame, app: &mut App) {
     draw_status_bar(f, app, chunks[1]);
 }
 
-fn draw_chat_list(f: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app.chats
-        .iter()
-        .enumerate()
-        .map(|(i, chat)| {
-            let mut text = chat.title.clone();
-            if chat.unread > 0 {
-                text = format!("({}) {}", chat.unread, text);
-            }
-            
-            let mut style = if i == app.selected_chat_index {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            if !app.focus_on_messages && i == app.selected_chat_index {
-                style = style.bg(Color::Blue);
-            }
-            
-            ListItem::new(text).style(style)
-        })
-        .collect();
-    
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Чаты"))
-        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
-        .highlight_symbol("▶ ");
-    
-    let mut state = ListState::default();
-    state.select(Some(app.selected_chat_index));
-    f.render_stateful_widget(list, area, &mut state);
-}
-
 fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     let title = app.get_current_chat_title();
 
@@ -206,18 +121,27 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
         height: area.height.saturating_sub(2),
     };
 
+    // Ensure inner_area is within valid bounds
+    let inner_area = Rect {
+        x: inner_area.x.min(area.x + area.width.saturating_sub(2)),
+        y: inner_area.y.min(area.y + area.height.saturating_sub(2)),
+        width: inner_area.width.min(area.width.saturating_sub(2)),
+        height: inner_area.height.min(area.height.saturating_sub(2)),
+    };
+
     let message_height = 1; // базовая высота для сообщения
     let image_height = 12; // высота для изображения
     let sticker_height = 8; // высота для стикера
     let voice_height = 3; // увеличена высота для голосового сообщения с плеером
     let audio_height = 3; // увеличена высота для аудио сообщения с плеером
+    let date_header_height = 1; // высота для заголовка даты
 
     let picker = match Picker::from_query_stdio() {
         Ok(p) => Some(p),
         Err(_) => None,
     };
 
-    // Умная логика прокрутки с учетом изображений и стикеров
+    // Умная логика прокрутки с учетом изображений и стикеров - АДАПТИРОВАНА ДЛЯ ЗАГОЛОВКОВ ДАТ
     let mut start_index = 0;
     if app.selected_message_index < app.messages.len() {
         let visible_height = inner_area.height as usize;
@@ -235,8 +159,27 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
         let last_12_messages_start = last_message_index.saturating_sub(11); // 12 строк от конца
 
         if (is_image_selected || is_video_selected || is_sticker_selected || is_voice_selected || is_audio_selected) && app.selected_message_index >= last_12_messages_start {
+            // Предварительно рассчитываем количество заголовков дат для корректной прокрутки медиа
+            let mut date_header_count = 0;
+            let mut prev_date = String::new();
+
+            // Считаем заголовки дат для последних visible_height сообщений
+            for i in (0..visible_height.min(app.messages.len())).rev() {
+                let msg_idx = app.messages.len().saturating_sub(1) - i;
+                if msg_idx < app.messages.len() {
+                    let current_date = extract_date_from_timestamp(&app.messages[msg_idx].timestamp);
+                    if current_date != prev_date && !prev_date.is_empty() {
+                        date_header_count += 1;
+                    }
+                    prev_date = current_date;
+                }
+            }
+
+            // Корректируем visible_height с учетом заголовков дат
+            let adjusted_visible_height = visible_height.saturating_sub(date_header_count);
+
             // Разная прокрутка для разных типов медиа
-            let base_start = app.messages.len().saturating_sub(visible_height);
+            let base_start = app.messages.len().saturating_sub(adjusted_visible_height);
             if is_voice_selected || is_audio_selected {
                 // Для голосовых и аудио сообщений: прокручиваем на 2 строки вниз
                 start_index = base_start + 2;
@@ -247,20 +190,39 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             start_index = start_index.min(app.messages.len().saturating_sub(1));
         } else {
             // Для обычных сообщений или изображений не в последних 12 строках: обычная логика
-            start_index = app.messages.len().saturating_sub(visible_height);
+            // Предварительно рассчитываем количество заголовков дат для корректной прокрутки
+            let mut date_header_count = 1;
+            let mut prev_date = String::new();
+
+            // Считаем заголовки дат для последних visible_height сообщений
+            for i in (0..visible_height.min(app.messages.len())).rev() {
+                let msg_idx = app.messages.len().saturating_sub(1) - i;
+                if msg_idx < app.messages.len() {
+                    let current_date = extract_date_from_timestamp(&app.messages[msg_idx].timestamp);
+                    if current_date != prev_date && !prev_date.is_empty() {
+                        date_header_count += 1;
+                    }
+                    prev_date = current_date;
+                }
+            }
+
+            // Корректируем visible_height с учетом заголовков дат
+            let adjusted_visible_height = visible_height.saturating_sub(date_header_count);
+
+            start_index = app.messages.len().saturating_sub(adjusted_visible_height);
 
             // Определяем диапазон, в котором маркер может перемещаться без прокрутки
             let cursor_range_start = last_message_index.saturating_sub(10);
 
             // Если маркер в диапазоне последних 10 сообщений - не прокручиваем
             if app.selected_message_index >= cursor_range_start {
-                start_index = app.messages.len().saturating_sub(visible_height);
+                start_index = app.messages.len().saturating_sub(adjusted_visible_height);
             } else {
                 // Маркер вышел за диапазон - прокручиваем, но сохраняем зазор в 10 сообщений
                 let adjusted_selected = app.selected_message_index + 10;
                 if adjusted_selected < app.messages.len() {
-                    start_index = adjusted_selected.saturating_sub(visible_height / 2);
-                    start_index = start_index.min(app.messages.len().saturating_sub(visible_height));
+                    start_index = adjusted_selected.saturating_sub(adjusted_visible_height / 2);
+                    start_index = start_index.min(app.messages.len().saturating_sub(adjusted_visible_height));
                 }
             }
         }
@@ -271,6 +233,30 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
 
     let mut y_offset = 0i32;
     let available_height = inner_area.height as i32;
+
+    // Определяем дату для самых старых видимых сообщений и отображаем её сверху
+    if let Some(first_visible_msg) = app.messages.get(start_index) {
+        let first_date = extract_date_from_timestamp(&first_visible_msg.timestamp);
+        let formatted_first_date = format_date_for_display(&first_date);
+
+        let first_date_area = Rect {
+            x: inner_area.x,
+            y: inner_area.y,
+            width: inner_area.width,
+            height: date_header_height,
+        };
+
+        let first_date_widget = Paragraph::new(formatted_first_date)
+            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(first_date_widget, first_date_area);
+
+        y_offset += date_header_height as i32;
+    }
+
+    // Группируем сообщения по датам для отображения заголовков
+    let mut current_date = String::new();
+    let mut previous_date = String::new();
 
     // Начинаем с рассчитанного индекса
     let mut index = start_index;
@@ -287,23 +273,60 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             if is_selected { audio_height } else { message_height }
         } else { message_height };
 
+        // Получаем дату текущего сообщения
+        current_date = extract_date_from_timestamp(&msg.timestamp);
+
+        // Проверяем, изменилась ли дата по сравнению с предыдущим сообщением
+        if current_date != previous_date && !previous_date.is_empty() {
+            // Добавляем заголовок даты перед группой сообщений
+            if y_offset + date_header_height as i32 <= available_height {
+                let date_area = Rect {
+                    x: inner_area.x,
+                    y: (inner_area.y as i32 + y_offset) as u16,
+                    width: inner_area.width,
+                    height: date_header_height,
+                };
+
+                let date_text = format_date_for_display(&current_date);
+                let date_widget = Paragraph::new(date_text)
+                    .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                    .alignment(ratatui::layout::Alignment::Center);
+                f.render_widget(date_widget, date_area);
+            }
+            y_offset += date_header_height as i32;
+
+            // Если после добавления заголовка места не осталось, выходим
+            if y_offset >= available_height {
+                break;
+            }
+        }
+
         // Проверяем, что область сообщения не выходит за границы
         let max_available_height = (inner_area.y as i32 + inner_area.height as i32 - y_offset) as u16;
         let safe_height = current_height.min(max_available_height);
 
         let message_area = Rect {
             x: inner_area.x,
-            y: inner_area.y + y_offset as u16,
+            y: (inner_area.y as i32 + y_offset) as u16,
             width: inner_area.width,
             height: safe_height,
         };
 
-        let time = msg.timestamp.split(' ').last().unwrap_or("00:00");
+        // Ensure message_area is within frame bounds
+        let frame_area = f.area();
+        let message_area = Rect {
+            x: message_area.x.min(frame_area.width.saturating_sub(1)),
+            y: message_area.y.min(frame_area.height.saturating_sub(1)),
+            width: message_area.width.min(frame_area.width.saturating_sub(message_area.x)),
+            height: message_area.height.min(frame_area.height.saturating_sub(message_area.y)),
+        };
+
+        let time = format_time_for_metadata(&msg.timestamp);
 
         match msg.r#type.as_str() {
             "sticker" => {
                 if is_selected {
-                    draw_sticker_message(f, msg, message_area, time, picker.as_ref());
+                    draw_sticker_message(f, msg, message_area, &time, picker.as_ref());
                 } else {
                     let sticker_text = if let Some(emoji) = &msg.sticker_emoji {
                         format!("{} [стикер — Enter: открыть]", emoji)
@@ -319,7 +342,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             }
             "photo" => {
                 if is_selected {
-                    draw_photo_message(f, msg, message_area, time, picker.as_ref(), is_selected);
+                    draw_photo_message(f, msg, message_area, &time, picker.as_ref(), is_selected);
                 } else {
                     let label = "[📷 Фото — Enter: открыть]";
                     let text_content = format!("{} {}: {}", time, msg.from, label);
@@ -331,7 +354,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             }
             "video" => {
                 if is_selected {
-                    draw_video_message(f, msg, message_area, time, picker.as_ref(), is_selected);
+                    draw_video_message(f, msg, message_area, &time, picker.as_ref(), is_selected);
                 } else {
                     // Для невыбранных сообщений используем разделенный формат
                     let content_text = if let Some(is_round) = msg.video_is_round {
@@ -352,7 +375,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             }
             "voice" => {
                 if is_selected {
-                    draw_voice_message(f, msg, message_area, time, &app.audio_player, app, is_selected);
+                    draw_voice_message(f, msg, message_area, &time, &app.audio_player, app, is_selected);
                 } else {
                     let duration_text = if let Some(duration) = msg.voice_duration {
                         format_duration(duration)
@@ -370,7 +393,7 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             }
             "audio" => {
                 if is_selected {
-                    draw_audio_message(f, msg, message_area, time, &app.audio_player, app, is_selected);
+                    draw_audio_message(f, msg, message_area, &time, &app.audio_player, app, is_selected);
                 } else {
                     let duration_text = if let Some(duration) = msg.audio_duration {
                         format_duration(duration)
@@ -396,6 +419,31 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
                     f.render_widget(text_widget, message_area);
                 }
             }
+            "location" => {
+                if is_selected {
+                    draw_location_message(f, msg, message_area, &time, is_selected);
+                } else {
+                    let location_info = if let (Some(lat), Some(lng)) = (msg.location_lat, msg.location_lng) {
+                        format!("{:.4}, {:.4}", lat, lng)
+                    } else {
+                        "неизвестно".to_string()
+                    };
+
+                    let title_info = if let Some(title) = &msg.location_title {
+                        format!(" — {}", title)
+                    } else {
+                        String::new()
+                    };
+
+                    let label = format!("[📍 Местоположение{}]", title_info);
+                    let text_content = format!("{} {}: {} {}", time, msg.from, label, location_info);
+
+                    let text_widget = Paragraph::new(text_content)
+                        .style(Style::default().fg(Color::Green))
+                        .wrap(Wrap { trim: true });
+                    f.render_widget(text_widget, message_area);
+                }
+            }
             _ => {
                 let text_content = format!("{} {}: {}", time, msg.from, msg.text);
                 let text_widget = Paragraph::new(text_content)
@@ -405,8 +453,15 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
                     let inner_area = Rect {
                         x: message_area.x + 2,
                         y: message_area.y,
-                        width: message_area.width,
+                        width: message_area.width.saturating_sub(2),
                         height: message_area.height,
+                    };
+                    // Ensure inner_area is within bounds
+                    let inner_area = Rect {
+                        x: inner_area.x.min(message_area.x + message_area.width.saturating_sub(2)),
+                        y: inner_area.y.min(message_area.y + message_area.height),
+                        width: inner_area.width.min(message_area.width.saturating_sub(2)),
+                        height: inner_area.height.min(message_area.height),
                     };
                     f.render_widget(text_widget, inner_area);
                 } else {
@@ -433,6 +488,9 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
             f.render_widget(indicator, indicator_area);
         }
 
+        // Сохраняем текущую дату для следующего сравнения
+        previous_date = current_date.clone();
+
         y_offset += current_height as i32;
         index += 1;
     }
@@ -445,9 +503,38 @@ fn draw_messages(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(messages_block, area);
 }
 
+fn draw_chat_list(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app.chats
+        .iter()
+        .enumerate()
+        .map(|(i, chat)| {
+            let mut text = chat.title.clone();
+            if chat.unread > 0 {
+                text = format!("({}) {}", chat.unread, text);
+            }
 
+            let mut style = if i == app.selected_chat_index {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            if !app.focus_on_messages && i == app.selected_chat_index {
+                style = style.bg(Color::Blue);
+            }
 
+            ListItem::new(text).style(style)
+        })
+        .collect();
 
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Чаты"))
+        .highlight_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .highlight_symbol("▶ ");
+
+    let mut state = ListState::default();
+    state.select(Some(app.selected_chat_index));
+    f.render_stateful_widget(list, area, &mut state);
+}
 
 fn draw_photo_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, picker: Option<&Picker>, is_selected: bool) {
     let inner_area = Rect {
@@ -468,7 +555,7 @@ fn draw_photo_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
 
         let content_widget = Paragraph::new(photo_lines)
             .style(Style::default().fg(Color::Cyan));
-            
+
         f.render_widget(content_widget, inner_area);
 
         // Изображение после контента (с четвертой строки)
@@ -542,6 +629,140 @@ fn draw_photo_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
     f.render_widget(message_block, area);
 }
 
+fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer, _app: &crate::App, is_selected: bool) {
+    let inner_area = Rect {
+        x: area.x + 2,
+        y: area.y,
+        width: area.width,
+        height: area.height,
+    };
+
+    // Создаем визуализацию голосового сообщения
+    let duration_display = if let Some(duration) = msg.voice_duration {
+        format_duration(duration)
+    } else {
+        "неизвестно".to_string()
+    };
+
+    // Проверяем, является ли это текущее проигрываемое сообщение
+    let is_current = audio_player.is_current_message(msg.id);
+
+    // Создаем дизайн с разделенными метаданными и контентом
+    // Метаданные на первой строке - выделяем желтым только при выборе
+    let metadata_color = if is_selected { Color::Yellow } else { Color::White };
+    let mut voice_lines = vec![
+        Line::from(format!("{} {}:", time, msg.from)).style(Style::default().fg(metadata_color)),
+    ];
+    // Контент на отдельной строке
+    voice_lines.push(Line::from(format!("🎤 Голосовое сообщение — {}", duration_display)).style(Style::default().fg(Color::Red)));
+    // Добавляем строку с элементами управления
+    if is_current {
+        let time_display = audio_player.get_current_time_display();
+        let play_pause = if audio_player.is_playing { "⏸" } else { "▶" };
+        let controls_line = format!("{} | {} | h: -2s | k: +2s | Esc: ✗", time_display, play_pause);
+        voice_lines.push(Line::from(controls_line).style(Style::default().fg(Color::Green)));
+    } else {
+        voice_lines.push(Line::from("Enter: ▶  Esc: ✗").style(Style::default().fg(Color::Gray)));
+    }
+
+    let voice_widget = Paragraph::new(voice_lines)
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(voice_widget, inner_area);
+}
+
+fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer, _app: &crate::App, is_selected: bool) {
+    let inner_area = Rect {
+        x: area.x + 2,
+        y: area.y,
+        width: area.width,
+        height: area.height,
+    };
+    // Создаем визуализацию аудио сообщения
+    let duration_display = if let Some(duration) = msg.audio_duration {
+        format_duration(duration)
+    } else {
+        "неизвестно".to_string()
+    };
+
+    // Получаем информацию о треке
+    let title_text = if let Some(title) = &msg.audio_title {
+        if let Some(artist) = &msg.audio_artist {
+            format!("{} - {}", artist, title)
+        } else {
+            title.clone()
+        }
+    } else {
+        "Аудио".to_string()
+    };
+
+    // Проверяем, является ли это текущее проигрываемое сообщение
+    let is_current = audio_player.is_current_message(msg.id);
+
+    // Создаем дизайн с разделенными метаданными и контентом
+    // Метаданные на первой строке - выделяем желтым только при выборе
+    let metadata_color = if is_selected { Color::Yellow } else { Color::White };
+    let mut audio_lines = vec![
+        Line::from(format!("{} {}:", time, msg.from)).style(Style::default().fg(metadata_color)),
+    ];
+    // Контент на отдельной строке
+    audio_lines.push(Line::from(format!("🎵 {} — {}", title_text, duration_display)).style(Style::default().fg(Color::Blue)));
+    // Добавляем строку с временем и элементами управления
+    if is_current {
+        let time_display = audio_player.get_current_time_display();
+        let play_pause = if audio_player.is_playing { "⏸" } else { "▶" };
+        let controls_line = format!("{} | {} | h: -2s | k: +2s | Esc: ✗", time_display, play_pause);
+        audio_lines.push(Line::from(controls_line).style(Style::default().fg(Color::Green)));
+    } else {
+        audio_lines.push(Line::from("Enter: ▶  Esc: ✗").style(Style::default().fg(Color::Gray)));
+    }
+
+    let audio_widget = Paragraph::new(audio_lines)
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(audio_widget, inner_area);
+}
+
+fn draw_video_preview(f: &mut Frame, app: &App) {
+    let area = f.area();
+
+    // Чёрный фон на весь экран
+    let overlay = Block::default().style(Style::default().bg(Color::Black));
+    f.render_widget(Clear, area); // очистка
+    f.render_widget(overlay, area);
+
+    // Рисуем превью видео, если путь есть
+    if let Some(preview_path) = &app.preview_video_path {
+        let inner = Rect { x: area.x + 1, y: area.y + 1, width: area.width.saturating_sub(2), height: area.height.saturating_sub(4) };
+        if let Ok(picker) = Picker::from_query_stdio() {
+            match try_display_image_full(preview_path, &picker) {
+                Ok(mut protocol) => {
+                    let widget = StatefulImage::new();
+                    f.render_stateful_widget(widget, inner, &mut protocol);
+                }
+                Err(e) => {
+                    let text = Paragraph::new(format!("Не удалось отобразить превью видео: {}", e))
+                        .style(Style::default().fg(Color::Red))
+                        .wrap(Wrap { trim: true });
+                    f.render_widget(text, inner);
+                }
+            }
+        } else {
+            let text = Paragraph::new("Терминал не поддерживает отрисовку изображений")
+                .style(Style::default().fg(Color::Yellow))
+                .wrap(Wrap { trim: true });
+            f.render_widget(text, inner);
+        }
+    }
+
+    // Нижняя подсказка
+    let hint = Paragraph::new("Enter: воспроизвести в mpv | Esc: назад")
+        .style(Style::default().fg(Color::Gray))
+        .block(Block::default().borders(Borders::ALL).title("Превью видео"));
+    let hint_area = Rect { x: area.x + 2, y: area.y + area.height.saturating_sub(3), width: area.width.saturating_sub(4), height: 3 };
+    f.render_widget(hint, hint_area);
+}
+
 fn try_display_image(image_path: &str, picker: &Picker, _area: Rect) -> Result<StatefulProtocol, String> {
     let actual_path = if std::path::Path::new(image_path).exists() {
         image_path.to_string()
@@ -590,18 +811,18 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     } else {
         app.get_status_text()
     };
-    
+
     let color = match app.state {
         AppState::Error => Color::Red,
         AppState::MessageInput => Color::Green,
         _ => Color::Gray,
     };
-    
+
     let status = Paragraph::new(status_text)
         .block(Block::default().borders(Borders::ALL).title("Статус"))
         .style(Style::default().fg(color))
         .wrap(Wrap { trim: true });
-    
+
     f.render_widget(status, area);
 }
 
@@ -616,26 +837,26 @@ fn draw_error_screen(f: &mut Frame, app: &App) {
             Constraint::Length(3),
         ])
         .split(area);
-    
+
     let title = Paragraph::new("Ошибка")
         .block(Block::default().borders(Borders::ALL))
         .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
     f.render_widget(title, chunks[0]);
-    
+
     let error_text = vec![
         Line::from(""),
         Line::from(app.error_message.clone()),
         Line::from(""),
         Line::from("Нажмите любую клавишу для продолжения..."),
     ];
-    
+
     let error_msg = Paragraph::new(error_text)
         .block(Block::default().borders(Borders::ALL).title("Подробности"))
         .style(Style::default().fg(Color::Red))
         .wrap(Wrap { trim: true });
-    
+
     f.render_widget(error_msg, chunks[1]);
-    
+
     let status = Paragraph::new("Любая клавиша: продолжить | q: выход")
         .style(Style::default().fg(Color::Gray));
     f.render_widget(status, chunks[2]);
@@ -756,6 +977,112 @@ fn try_display_image_full(image_path: &str, picker: &Picker) -> Result<StatefulP
         })?;
 
     Ok(picker.new_resize_protocol(dyn_img))
+}
+
+fn draw_loading_screen(f: &mut Frame, _app: &mut App) {
+    let area = f.area();
+
+    let block = Block::default()
+        .title("vi-tg")
+        .borders(Borders::ALL)
+        .style(Style::default());
+
+    let text = vec![
+        Line::from(""),
+        Line::from("Загрузка..."),
+        Line::from(""),
+        Line::from("Проверка авторизации..."),
+    ];
+
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(paragraph, area);
+}
+
+fn draw_phone_input(f: &mut Frame, app: &App) {
+    let area = f.area();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    let title = Paragraph::new("Авторизация в Telegram")
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    f.render_widget(title, chunks[0]);
+
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(chunks[1]);
+
+    let instruction = Paragraph::new("Введите номер телефона с кодом страны (например: +7 999 123 45 67):")
+        .style(Style::default().fg(Color::White));
+    f.render_widget(instruction, main_chunks[0]);
+
+    let input_text = format!("Номер: {}", app.phone_input);
+    let input = Paragraph::new(input_text)
+        .block(Block::default().borders(Borders::ALL).title("Ввод"))
+        .style(Style::default().fg(Color::Green));
+    f.render_widget(input, main_chunks[1]);
+
+    let status = Paragraph::new("Enter: подтвердить | Esc: выход")
+        .style(Style::default().fg(Color::Gray));
+    f.render_widget(status, chunks[2]);
+}
+
+fn draw_code_input(f: &mut Frame, app: &App) {
+    let area = f.area();
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(0),
+            Constraint::Length(3),
+        ])
+        .split(area);
+
+    let title = Paragraph::new("Код подтверждения")
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    f.render_widget(title, chunks[0]);
+
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(chunks[1]);
+
+    let instruction = Paragraph::new("Введите код, который был отправлен на ваш номер телефона:")
+        .style(Style::default().fg(Color::White));
+    f.render_widget(instruction, main_chunks[0]);
+
+    let input_text = format!("Код: {} ({})", app.code_input, app.code_input.len());
+    let input = Paragraph::new(input_text)
+        .block(Block::default().borders(Borders::ALL).title("Ввод"))
+        .style(Style::default().fg(Color::Green));
+    f.render_widget(input, main_chunks[1]);
+
+    let status = Paragraph::new("Enter: подтвердить | Esc: назад")
+        .style(Style::default().fg(Color::Gray));
+    f.render_widget(status, chunks[2]);
 }
 
 fn draw_video_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, picker: Option<&Picker>, is_selected: bool) {
@@ -950,48 +1277,7 @@ fn draw_sticker_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &
     f.render_widget(message_block, area);
 }
 
-fn draw_video_preview(f: &mut Frame, app: &App) {
-    let area = f.area();
-
-    // Чёрный фон на весь экран
-    let overlay = Block::default().style(Style::default().bg(Color::Black));
-    f.render_widget(Clear, area); // очистка
-    f.render_widget(overlay, area);
-
-    // Рисуем превью видео, если путь есть
-    if let Some(preview_path) = &app.preview_video_path {
-        let inner = Rect { x: area.x + 1, y: area.y + 1, width: area.width.saturating_sub(2), height: area.height.saturating_sub(4) };
-        if let Ok(picker) = Picker::from_query_stdio() {
-            match try_display_image_full(preview_path, &picker) {
-                Ok(mut protocol) => {
-                    let widget = StatefulImage::new();
-                    f.render_stateful_widget(widget, inner, &mut protocol);
-                }
-                Err(e) => {
-                    let text = Paragraph::new(format!("Не удалось отобразить превью видео: {}", e))
-                        .style(Style::default().fg(Color::Red))
-                        .wrap(Wrap { trim: true });
-                    f.render_widget(text, inner);
-                }
-            }
-        } else {
-            let text = Paragraph::new("Терминал не поддерживает отрисовку изображений")
-                .style(Style::default().fg(Color::Yellow))
-                .wrap(Wrap { trim: true });
-            f.render_widget(text, inner);
-        }
-    }
-
-    // Нижняя подсказка
-    let hint = Paragraph::new("Enter: воспроизвести в mpv | Esc: назад")
-        .style(Style::default().fg(Color::Gray))
-        .block(Block::default().borders(Borders::ALL).title("Превью видео"));
-    let hint_area = Rect { x: area.x + 2, y: area.y + area.height.saturating_sub(3), width: area.width.saturating_sub(4), height: 3 };
-    f.render_widget(hint, hint_area);
-}
-
-fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer, _app: &crate::App, is_selected: bool) {
-
+fn draw_location_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, is_selected: bool) {
     let inner_area = Rect {
         x: area.x + 2,
         y: area.y,
@@ -999,88 +1285,46 @@ fn draw_voice_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &st
         height: area.height,
     };
 
-    // Создаем визуализацию голосового сообщения
-    let duration_display = if let Some(duration) = msg.voice_duration {
-        format_duration(duration)
+    // Получаем информацию о местоположении
+    let coordinates_text = if let (Some(lat), Some(lng)) = (msg.location_lat, msg.location_lng) {
+        format!("Координаты: {:.6}, {:.6}", lat, lng)
     } else {
-        "неизвестно".to_string()
+        "Координаты: неизвестны".to_string()
     };
 
-    // Проверяем, является ли это текущее проигрываемое сообщение
-    let is_current = audio_player.is_current_message(msg.id);
+    let title_text = if let Some(title) = &msg.location_title {
+        format!("Название: {}", title)
+    } else {
+        "Название: не указано".to_string()
+    };
+
+    let address_text = if let Some(address) = &msg.location_address {
+        format!("Адрес: {}", address)
+    } else {
+        "Адрес: не определен".to_string()
+    };
 
     // Создаем дизайн с разделенными метаданными и контентом
     // Метаданные на первой строке - выделяем желтым только при выборе
     let metadata_color = if is_selected { Color::Yellow } else { Color::White };
-    let mut voice_lines = vec![
+    let mut location_lines = vec![
         Line::from(format!("{} {}:", time, msg.from)).style(Style::default().fg(metadata_color)),
     ];
-    // Контент на отдельной строке
-    voice_lines.push(Line::from(format!("🎤 Голосовое сообщение — {}", duration_display)).style(Style::default().fg(Color::Red)));
-    // Добавляем строку с элементами управления
-    if is_current {
-        let time_display = audio_player.get_current_time_display();
-        let play_pause = if audio_player.is_playing { "⏸" } else { "▶" };
-        let controls_line = format!("{} | {} | h: -2s | k: +2s | Esc: ✗", time_display, play_pause);
-        voice_lines.push(Line::from(controls_line).style(Style::default().fg(Color::Green)));
+    // Контент на отдельных строках
+    location_lines.push(Line::from("📍 Местоположение").style(Style::default().fg(Color::Green)));
+    location_lines.push(Line::from(coordinates_text).style(Style::default().fg(Color::Cyan)));
+    location_lines.push(Line::from(title_text).style(Style::default().fg(Color::Cyan)));
+    location_lines.push(Line::from(address_text).style(Style::default().fg(Color::Cyan)));
+
+    // Добавляем информацию о карте
+    if msg.location_map_path.is_some() {
+        location_lines.push(Line::from("Карта: доступна — Enter: открыть").style(Style::default().fg(Color::Blue)));
     } else {
-        voice_lines.push(Line::from("Enter: ▶  Esc: ✗").style(Style::default().fg(Color::Gray)));
+        location_lines.push(Line::from("Карта: загружается...").style(Style::default().fg(Color::Yellow)));
     }
 
-    let voice_widget = Paragraph::new(voice_lines)
+    let location_widget = Paragraph::new(location_lines)
         .wrap(Wrap { trim: true });
 
-    f.render_widget(voice_widget, inner_area);
-}
-
-fn draw_audio_message(f: &mut Frame, msg: &crate::Message, area: Rect, time: &str, audio_player: &crate::app::AudioPlayer, _app: &crate::App, is_selected: bool) {
-    let inner_area = Rect {
-        x: area.x + 2,
-        y: area.y,
-        width: area.width,
-        height: area.height,
-    };
-    // Создаем визуализацию аудио сообщения
-    let duration_display = if let Some(duration) = msg.audio_duration {
-        format_duration(duration)
-    } else {
-        "неизвестно".to_string()
-    };
-
-    // Получаем информацию о треке
-    let title_text = if let Some(title) = &msg.audio_title {
-        if let Some(artist) = &msg.audio_artist {
-            format!("{} - {}", artist, title)
-        } else {
-            title.clone()
-        }
-    } else {
-        "Аудио".to_string()
-    };
-
-    // Проверяем, является ли это текущее проигрываемое сообщение
-    let is_current = audio_player.is_current_message(msg.id);
-
-    // Создаем дизайн с разделенными метаданными и контентом
-    // Метаданные на первой строке - выделяем желтым только при выборе
-    let metadata_color = if is_selected { Color::Yellow } else { Color::White };
-    let mut audio_lines = vec![
-        Line::from(format!("{} {}:", time, msg.from)).style(Style::default().fg(metadata_color)),
-    ];
-    // Контент на отдельной строке
-    audio_lines.push(Line::from(format!("🎵 {} — {}", title_text, duration_display)).style(Style::default().fg(Color::Blue)));
-    // Добавляем строку с временем и элементами управления
-    if is_current {
-        let time_display = audio_player.get_current_time_display();
-        let play_pause = if audio_player.is_playing { "⏸" } else { "▶" };
-        let controls_line = format!("{} | {} | h: -2s | k: +2s | Esc: ✗", time_display, play_pause);
-        audio_lines.push(Line::from(controls_line).style(Style::default().fg(Color::Green)));
-    } else {
-        audio_lines.push(Line::from("Enter: ▶  Esc: ✗").style(Style::default().fg(Color::Gray)));
-    }
-
-    let audio_widget = Paragraph::new(audio_lines)
-        .wrap(Wrap { trim: true });
-
-    f.render_widget(audio_widget, inner_area);
+    f.render_widget(location_widget, inner_area);
 }
