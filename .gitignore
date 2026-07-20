@@ -1,2 +1,11 @@
 target/debug/
 target/
+/server
+/backend/server
+/backend/backend
+/vi-tg-server
+*.pkg.tar.zst
+srcinfo
+.SRCINFO
+pkg/
+src/
